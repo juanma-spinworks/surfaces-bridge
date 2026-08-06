@@ -1,0 +1,210 @@
+name: Release npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package version already tagged as vVERSION
+        required: true
+        type: string
+      mode:
+        description: Bootstrap creates the package; trusted-stage is for later releases
+        required: true
+        default: bootstrap
+        type: choice
+        options:
+          - bootstrap
+          - trusted-stage
+      confirmation:
+        description: Type the exact confirmation documented in docs/npm-bootstrap.md
+        required: true
+        type: string
+
+concurrency:
+  group: surfaces-bridge-npm-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Test and fingerprint candidate
+    runs-on: ubuntu-latest
+    outputs:
+      integrity: ${{ steps.candidate.outputs.integrity }}
+      shasum: ${{ steps.candidate.outputs.shasum }}
+      version: ${{ steps.candidate.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.14.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Pin the release CLI
+        run: |
+          npm install --global npm@11.15.0
+          test "$(npm --version)" = "11.15.0"
+      - name: Verify source, tag, and human confirmation
+        run: node scripts/release-preflight.mjs
+        env:
+          RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
+          RELEASE_MODE: ${{ inputs.mode }}
+          RELEASE_VERSION: ${{ inputs.version }}
+      - name: Test exact source
+        run: npm test
+      - name: Refuse generated or dirty source
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+      - name: Fingerprint the exact package boundary
+        id: candidate
+        run: |
+          npm pack --dry-run --json > release-pack.json
+          node scripts/create-release-manifest.mjs \
+            release-pack.json \
+            release-manifest.json
+        env:
+          RELEASE_MODE: ${{ inputs.mode }}
+      - name: Record the candidate in the workflow summary
+        run: |
+          {
+            echo "## npm release candidate"
+            echo
+            echo '```json'
+            cat release-manifest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve candidate evidence
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: release-candidate-${{ steps.candidate.outputs.version }}
+          path: |
+            release-manifest.json
+            release-pack.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  publish-bootstrap:
+    name: Human-approved first publication
+    if: inputs.mode == 'bootstrap'
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment:
+      name: npm-production
+      url: https://www.npmjs.com/package/@spinworks-ai/surfaces-bridge/v/${{ needs.prepare.outputs.version }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.14.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Pin the release CLI
+        run: |
+          npm install --global npm@11.15.0
+          test "$(npm --version)" = "11.15.0"
+      - name: Reverify approved source
+        run: |
+          node scripts/release-preflight.mjs
+          npm test
+          npm pack --dry-run --json > release-pack.json
+          node scripts/create-release-manifest.mjs \
+            release-pack.json \
+            release-manifest.json
+          node scripts/verify-release-fingerprint.mjs release-manifest.json
+        env:
+          EXPECTED_INTEGRITY: ${{ needs.prepare.outputs.integrity }}
+          EXPECTED_SHASUM: ${{ needs.prepare.outputs.shasum }}
+          RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
+          RELEASE_MODE: ${{ inputs.mode }}
+          RELEASE_VERSION: ${{ inputs.version }}
+      - name: Publish the first public package with provenance
+        run: |
+          test -n "$NODE_AUTH_TOKEN"
+          npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+      - name: Verify registry integrity, signatures, and provenance
+        run: |
+          node scripts/verify-published-release.mjs \
+            release-manifest.json \
+            release-receipt.json
+      - name: Record the verified release
+        run: |
+          {
+            echo "## verified npm release"
+            echo
+            echo '```json'
+            cat release-receipt.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve release evidence
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: verified-release-${{ needs.prepare.outputs.version }}
+          path: |
+            release-manifest.json
+            release-receipt.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  stage-trusted:
+    name: Human-approved trusted staging
+    if: inputs.mode == 'trusted-stage'
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment:
+      name: npm-production
+      url: https://www.npmjs.com/package/@spinworks-ai/surfaces-bridge
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.14.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Pin the release CLI
+        run: |
+          npm install --global npm@11.15.0
+          test "$(npm --version)" = "11.15.0"
+      - name: Reverify approved source
+        run: |
+          node scripts/release-preflight.mjs
+          npm test
+          npm pack --dry-run --json > release-pack.json
+          node scripts/create-release-manifest.mjs \
+            release-pack.json \
+            release-manifest.json
+          node scripts/verify-release-fingerprint.mjs release-manifest.json
+        env:
+          EXPECTED_INTEGRITY: ${{ needs.prepare.outputs.integrity }}
+          EXPECTED_SHASUM: ${{ needs.prepare.outputs.shasum }}
+          RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
+          RELEASE_MODE: ${{ inputs.mode }}
+          RELEASE_VERSION: ${{ inputs.version }}
+      - name: Stage through the token-free trusted publisher
+        run: npm stage publish --access public
+      - name: Record the pending human proof of presence
+        run: |
+          {
+            echo "## staged npm release"
+            echo
+            echo "The candidate was staged through OIDC without an npm token."
+            echo "A maintainer must now inspect and approve it on npm with 2FA."
+          } >> "$GITHUB_STEP_SUMMARY"

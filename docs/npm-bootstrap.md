@@ -1,4 +1,4 @@
-# npm publication bootstrap
+# npm publication and trusted-release ceremony
 
 The package name is reserved by product decision but cannot be published until
 SpinWorks owns the `spinworks-ai` npm organization.
@@ -15,18 +15,54 @@ SpinWorks owns the `spinworks-ai` npm organization.
 npm staged publishing cannot create a brand-new package. The first release must
 therefore be a narrowly controlled bootstrap:
 
-1. Confirm `main` CI is green and the release commit is tagged `v0.1.0`.
-2. Run `npm test` and inspect `npm pack --dry-run --json`.
-3. Use a short-lived, granular npm token limited to this organization.
-4. Publish the exact tagged commit from GitHub Actions with provenance:
-   `npm publish --access public --provenance`.
-5. Delete the bootstrap token immediately after the release.
-6. Verify package contents, registry signature, provenance, and clean-machine
-   execution before allowlisting `0.1.0` in Surfaces.
+1. Create the public-repository GitHub environment `npm-production`. Restrict it
+   to `main`, require a maintainer review, and disallow administrator bypass if
+   the repository plan supports that rule.
+2. Confirm `main` CI is green, then create and push the immutable tag `v0.1.0`
+   at the exact current `main` commit.
+3. Create a short-lived granular access token limited to the `spinworks-ai`
+   organization and package publication. Put it only in the `npm-production`
+   environment secret `NPM_BOOTSTRAP_TOKEN`.
+4. Run **Release npm package** from `main` with:
+   - version: `0.1.0`
+   - mode: `bootstrap`
+   - confirmation:
+     `publish @spinworks-ai/surfaces-bridge@0.1.0`
+5. Inspect the completed candidate job, its package fingerprint, and the exact
+   source commit before approving the environment deployment.
+6. The guarded job publishes with
+   `npm publish --access public --provenance`, compares the live registry
+   integrity with the approved candidate, and runs `npm audit signatures` from
+   a clean temporary consumer.
+7. Delete the GitHub environment secret and revoke the bootstrap token
+   immediately after the verified release.
+8. Preserve the workflow run and `verified-release-0.1.0` evidence artifact,
+   then repeat clean-Mac Codex and Claude enrollment before external alpha.
+
+The workflow pins Node.js 22.14.0, npm CLI 11.15.0, and every GitHub-owned
+action to an immutable commit. It refuses a branch other than public `main`, a
+source commit that differs from `origin/main`, a missing or mismatched
+`vVERSION` tag, a dirty checkout, or a mistyped human confirmation.
 
 ## Subsequent publications
 
-After the package exists, configure this GitHub repository and its release
-workflow as the npm trusted publisher. Use a protected GitHub environment,
-OIDC, staged publishing, maintainer inspection, and 2FA approval. Do not retain
-an npm publication token.
+After the package exists:
+
+1. Configure its npm trusted publisher with:
+   - GitHub owner: `juanma-spinworks`
+   - repository: `surfaces-bridge`
+   - workflow filename: `release.yml`
+   - environment: `npm-production`
+   - allowed action: stage-only `npm stage publish`
+2. In package publishing access, select
+   **Require two-factor authentication and disallow tokens**.
+3. Remove any remaining npm publication token.
+4. For each later version, merge and test the version bump, tag the exact
+   current `main`, then run the workflow in `trusted-stage` mode with the exact
+   confirmation `stage @spinworks-ai/surfaces-bridge@VERSION`.
+5. Inspect the staged tarball on npm, approve it with maintainer 2FA, and
+   independently verify registry integrity, signatures, provenance, and
+   clean-machine execution before Surfaces emits the new version.
+
+Trusted staging uses GitHub OIDC and carries no npm token. The npm package must
+already exist because staged publishing cannot create a brand-new package.
