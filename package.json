@@ -9,6 +9,7 @@
   },
   "files": [
     "README.md",
+    "origin-policy.mjs",
     "surfaces-bridge.mjs"
   ],
   "engines": {
@@ -16,7 +17,7 @@
   },
   "scripts": {
     "check": "node scripts/check-package.mjs && npm pack --dry-run --json",
-    "test": "npm run check"
+    "test": "node --test tests/*.test.mjs && npm run check"
   },
   "repository": {
     "type": "git",

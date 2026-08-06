@@ -41,6 +41,12 @@ The connection command completes proof of possession, stores the credential,
 fetches the signed role context, and renews an explicit 90-second presence
 lease in the same ephemeral invocation.
 
+Before sending the pairing code, the bridge requires an exact official HTTPS
+origin. Arbitrary hosts, plaintext HTTP, credentials, paths, queries, fragments,
+and nonstandard production ports are rejected. Local development can opt into
+an HTTP or HTTPS loopback origin with `--allow-local-origin`; that flag never
+permits a non-loopback host.
+
 For follow-up operations, reuse the same exact package prefix. A bare
 `surfaces-bridge` command is not installed globally by `npm exec`:
 
@@ -58,8 +64,10 @@ Run `surfaces-bridge` without a command to see all supported operations.
 The package never contains a Surfaces access token, model-provider credential,
 signing private key, repository credential, or environment secret. Pairing
 codes are short-lived and single-use. The Surfaces server also enforces an
-exact bridge-version allowlist; a public package alone is not authority to
-connect.
+exact self-reported bridge-version compatibility policy; a public package alone
+is not authority to connect. Package integrity and provenance authenticate the
+artifact. Connection and refresh-family revocation provide server-side
+containment.
 
 Please report vulnerabilities privately using the instructions in
 [SECURITY.md](SECURITY.md).
@@ -71,4 +79,4 @@ npm test
 ```
 
 The check validates the manifest, dependency-free boundary, executable version,
-and exact npm tarball contents.
+trusted-origin policy, and exact npm tarball contents.

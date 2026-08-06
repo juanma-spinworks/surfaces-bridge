@@ -11,6 +11,8 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
+import { resolveSurfaceOrigin } from "./origin-policy.mjs";
+
 const PROTOCOL_VERSION = "surfaces.coms.v1";
 const BRIDGE_KIND = "surfaces-bridge";
 const BRIDGE_VERSION = "0.1.0";
@@ -50,7 +52,9 @@ try {
 }
 
 async function connect(args) {
-  const origin = required(args, "origin").replace(/\/+$/u, "");
+  const origin = resolveSurfaceOrigin(required(args, "origin"), {
+    allowLocal: args["allow-local-origin"] === true,
+  });
   const code = required(args, "code");
   assertMacKeychain();
   assertKeychainWritable();
@@ -526,7 +530,7 @@ function printUsage() {
   process.stdout.write(`Surfaces reference bridge
 
 Usage:
-  surfaces-bridge connect --origin <url> --code <SURF-code>
+  surfaces-bridge connect --origin <url> --code <SURF-code> [--allow-local-origin]
   surfaces-bridge context [--connection <id>] [--cursor <event-id>]
   surfaces-bridge event [--connection <id>] --file <event.json>
   surfaces-bridge presence [--connection <id>]
