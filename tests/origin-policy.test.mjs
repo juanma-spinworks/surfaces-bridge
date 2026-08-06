@@ -12,6 +12,12 @@ test("accepts only the exact production Surface origins", () => {
     resolveSurfaceOrigin("https://surfaces.slangworks.com"),
     "https://surfaces.slangworks.com",
   );
+  assert.equal(
+    resolveSurfaceOrigin(
+      "https://surfaces-agent-api-1091410357131.us-east1.run.app",
+    ),
+    "https://surfaces-agent-api-1091410357131.us-east1.run.app",
+  );
   assert.throws(
     () => resolveSurfaceOrigin("https://surfaces.spinworks.ai.attacker.test"),
     /untrusted Surface origin/u,

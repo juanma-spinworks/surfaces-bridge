@@ -3,6 +3,7 @@ const TRUSTED_SURFACE_ORIGINS = new Set([
   "https://surfaces.spinworks.ai",
   "https://surfaces.slangworks.com",
   "https://surfaces-slangworks.chipionero.chatgpt.site",
+  "https://surfaces-agent-api-1091410357131.us-east1.run.app",
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "[::1]", "localhost"]);
