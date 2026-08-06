@@ -51,6 +51,16 @@ assert.doesNotMatch(
   /next: `surfaces-bridge/u,
   "connect must not return a bare command unavailable after npm exec exits",
 );
+assert.match(
+  source,
+  /assertMacKeychain\(\);\s*assertKeychainWritable\(\);\s*const \{ publicKey, privateKey \}/u,
+  "Keychain writes must be proven before the pairing is consumed",
+);
+assert.match(
+  source,
+  /macOS Keychain rejected credential storage\. Revoke this connection and pair again outside the provider sandbox\./u,
+  "credential-storage failures must be sanitized",
+);
 
 process.stdout.write(
   `${manifest.name}@${manifest.version} public package boundary passed\n`,
