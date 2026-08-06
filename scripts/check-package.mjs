@@ -14,6 +14,15 @@ assert.equal(manifest.private, undefined);
 assert.deepEqual(manifest.bin, {
   "surfaces-bridge": "./surfaces-bridge.mjs",
 });
+assert.deepEqual(
+  manifest.scripts,
+  {
+    check:
+      "node scripts/check-package.mjs && node scripts/check-release-workflow.mjs && npm pack --dry-run --json",
+    test: "node --test tests/*.test.mjs && npm run check",
+  },
+  "npm publish lifecycle scripts must remain absent",
+);
 assert.deepEqual(manifest.files, [
   "README.md",
   "origin-policy.mjs",

@@ -33,9 +33,13 @@ Surfaces server, use the exact version shown by Surfaces:
 npm exec --yes \
   --package=@spinworks-ai/surfaces-bridge@0.1.0 \
   -- surfaces-bridge connect \
-  --origin https://agents.surfaces.spinworks.ai \
+  --origin https://surfaces-agent-api-1091410357131.us-east1.run.app \
   --code SURF-ABCD-2345
 ```
+
+That origin is the current owner-only SlangWorks canary. The Surfaces UI emits
+the exact supported origin; do not substitute a hostname from an older prompt
+or example.
 
 The connection command completes proof of possession, stores the credential,
 fetches the signed role context, and renews an explicit 90-second presence
