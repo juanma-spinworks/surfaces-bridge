@@ -53,6 +53,7 @@ async function connect(args) {
   const origin = required(args, "origin").replace(/\/+$/u, "");
   const code = required(args, "code");
   assertMacKeychain();
+  assertKeychainWritable();
 
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" });
@@ -334,16 +335,26 @@ async function jsonFetch(url, init) {
 
 function saveCredential(connectionId, credential) {
   const encoded = Buffer.from(JSON.stringify(credential)).toString("base64");
-  execFileSync("security", [
-    "add-generic-password",
-    "-U",
-    "-a",
-    connectionId,
-    "-s",
-    KEYCHAIN_SERVICE,
-    "-w",
-    encoded,
-  ]);
+  try {
+    execFileSync(
+      "security",
+      [
+        "add-generic-password",
+        "-U",
+        "-a",
+        connectionId,
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-w",
+        encoded,
+      ],
+      { stdio: "ignore" },
+    );
+  } catch {
+    throw new Error(
+      "macOS Keychain rejected credential storage. Revoke this connection and pair again outside the provider sandbox.",
+    );
+  }
 }
 
 function loadCredential(connectionId) {
@@ -449,6 +460,56 @@ function assertMacKeychain() {
   if (platform() !== "darwin") {
     throw new Error(
       "The MVP reference bridge currently requires macOS Keychain.",
+    );
+  }
+}
+
+function assertKeychainWritable() {
+  const probeAccount = `probe:${randomUUID()}`;
+  try {
+    execFileSync(
+      "security",
+      [
+        "add-generic-password",
+        "-U",
+        "-a",
+        probeAccount,
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-w",
+        "surfaces-keychain-write-probe",
+      ],
+      { stdio: "ignore" },
+    );
+    execFileSync(
+      "security",
+      [
+        "delete-generic-password",
+        "-a",
+        probeAccount,
+        "-s",
+        KEYCHAIN_SERVICE,
+      ],
+      { stdio: "ignore" },
+    );
+  } catch {
+    try {
+      execFileSync(
+        "security",
+        [
+          "delete-generic-password",
+          "-a",
+          probeAccount,
+          "-s",
+          KEYCHAIN_SERVICE,
+        ],
+        { stdio: "ignore" },
+      );
+    } catch {
+      // The probe was never stored or could not be removed in this sandbox.
+    }
+    throw new Error(
+      "macOS Keychain access is unavailable. Run the bridge outside the provider sandbox or approve Keychain access before pairing.",
     );
   }
 }
