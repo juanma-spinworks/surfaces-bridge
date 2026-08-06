@@ -111,12 +111,30 @@ async function connect(args) {
     connectedAt: new Date().toISOString(),
   });
 
+  const roleContext = await signedFetch(
+    credential,
+    "GET",
+    "/api/agent/context",
+  );
+  const presence = await signedFetch(
+    credential,
+    "POST",
+    "/api/agent/presence",
+    { state: "online" },
+  );
+
   writeJson({
     connected: true,
     connectionId: connection.connectionId,
     role: connection.role,
     tokenExpiresAt: connection.tokenExpiresAt,
-    next: `surfaces-bridge context --connection ${connection.connectionId}`,
+    context: roleContext,
+    presence,
+    followUp: {
+      instruction:
+        "Reuse the same pinned npm exec package prefix for every follow-up bridge command.",
+      connectionArgument: `--connection ${connection.connectionId}`,
+    },
   });
 }
 

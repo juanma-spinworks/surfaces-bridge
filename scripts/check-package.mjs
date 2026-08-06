@@ -36,6 +36,21 @@ assert.match(
   "executable and manifest versions must match",
 );
 assert.ok(source.startsWith("#!/usr/bin/env node\n"));
+assert.match(
+  source,
+  /const roleContext = await signedFetch\(\s*credential,\s*"GET",\s*"\/api\/agent\/context"/u,
+  "connect must fetch signed role context in the same ephemeral invocation",
+);
+assert.match(
+  source,
+  /const presence = await signedFetch\(\s*credential,\s*"POST",\s*"\/api\/agent\/presence"/u,
+  "connect must create an explicit presence lease in the same invocation",
+);
+assert.doesNotMatch(
+  source,
+  /next: `surfaces-bridge/u,
+  "connect must not return a bare command unavailable after npm exec exits",
+);
 
 process.stdout.write(
   `${manifest.name}@${manifest.version} public package boundary passed\n`,
