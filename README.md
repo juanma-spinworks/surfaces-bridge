@@ -37,12 +37,18 @@ npm exec --yes \
   --code SURF-ABCD-2345
 ```
 
-Then inspect the stored connection:
+The connection command completes proof of possession, stores the credential,
+fetches the signed role context, and renews an explicit 90-second presence
+lease in the same ephemeral invocation.
+
+For follow-up operations, reuse the same exact package prefix. A bare
+`surfaces-bridge` command is not installed globally by `npm exec`:
 
 ```bash
 npm exec --yes \
   --package=@spinworks-ai/surfaces-bridge@0.1.0 \
-  -- surfaces-bridge status
+  -- surfaces-bridge status \
+  --connection CONNECTION_ID_FROM_CONNECT
 ```
 
 Run `surfaces-bridge` without a command to see all supported operations.
