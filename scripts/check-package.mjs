@@ -70,6 +70,11 @@ assert.match(
   /resolveSurfaceOrigin\(required\(args, "origin"\)/u,
   "connect must validate the Surface origin before sending the pairing code",
 );
+assert.match(
+  source,
+  /credential\.origin = resolveSurfaceOrigin\(credential\.origin/u,
+  "stored credentials must revalidate the Surface origin before reuse",
+);
 
 process.stdout.write(
   `${manifest.name}@${manifest.version} public package boundary passed\n`,

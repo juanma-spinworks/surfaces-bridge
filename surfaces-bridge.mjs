@@ -52,8 +52,9 @@ try {
 }
 
 async function connect(args) {
+  const allowLocalOrigin = args["allow-local-origin"] === true;
   const origin = resolveSurfaceOrigin(required(args, "origin"), {
-    allowLocal: args["allow-local-origin"] === true,
+    allowLocal: allowLocalOrigin,
   });
   const code = required(args, "code");
   assertMacKeychain();
@@ -103,6 +104,7 @@ async function connect(args) {
     refreshToken: connection.refreshToken,
     refreshTokenExpiresAt: connection.refreshTokenExpiresAt,
     privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }),
+    ...(allowLocalOrigin ? { allowLocalOrigin: true } : {}),
   };
   saveCredential(connection.connectionId, credential);
   saveMetadata({
@@ -382,7 +384,13 @@ function loadCredential(connectionId) {
       `No Keychain credential was found for ${connectionId}. Pair again.`,
     );
   }
-  return JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+  const credential = JSON.parse(
+    Buffer.from(encoded, "base64").toString("utf8"),
+  );
+  credential.origin = resolveSurfaceOrigin(credential.origin, {
+    allowLocal: credential.allowLocalOrigin === true,
+  });
+  return credential;
 }
 
 function saveMetadata(metadata) {
