@@ -1,0 +1,33 @@
+{
+  "name": "@spinworks-ai/surfaces-bridge",
+  "version": "0.1.0",
+  "description": "Reference bridge for connecting a local agent session to SpinWorks Surfaces.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "surfaces-bridge": "./surfaces-bridge.mjs"
+  },
+  "files": [
+    "README.md",
+    "surfaces-bridge.mjs"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "check": "node scripts/check-package.mjs && npm pack --dry-run --json",
+    "test": "npm run check"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juanma-spinworks/surfaces-bridge.git"
+  },
+  "homepage": "https://surfaces.spinworks.ai",
+  "bugs": {
+    "url": "https://github.com/juanma-spinworks/surfaces-bridge/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
