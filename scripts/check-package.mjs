@@ -14,7 +14,11 @@ assert.equal(manifest.private, undefined);
 assert.deepEqual(manifest.bin, {
   "surfaces-bridge": "./surfaces-bridge.mjs",
 });
-assert.deepEqual(manifest.files, ["README.md", "surfaces-bridge.mjs"]);
+assert.deepEqual(manifest.files, [
+  "README.md",
+  "origin-policy.mjs",
+  "surfaces-bridge.mjs",
+]);
 assert.equal(manifest.engines?.node, ">=22.14.0");
 assert.equal(manifest.publishConfig?.access, "public");
 assert.equal(manifest.publishConfig?.provenance, true);
@@ -60,6 +64,11 @@ assert.match(
   source,
   /macOS Keychain rejected credential storage\. Revoke this connection and pair again outside the provider sandbox\./u,
   "credential-storage failures must be sanitized",
+);
+assert.match(
+  source,
+  /resolveSurfaceOrigin\(required\(args, "origin"\)/u,
+  "connect must validate the Surface origin before sending the pairing code",
 );
 
 process.stdout.write(
