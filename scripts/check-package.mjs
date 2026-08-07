@@ -124,6 +124,11 @@ assert.match(
 );
 assert.match(
   source,
+  /currentManifest\?\.revision === stored\.manifest\.revision[\s\S]*keychainRevisionIsComplete\(connectionId, currentManifest, run\)[\s\S]*return;/u,
+  "an ambiguous helper failure must retain a complete committed revision",
+);
+assert.match(
+  source,
   /writeKeychainSecret\(\s*probeAccount,\s*"surfaces-keychain-write-probe",\s*run,\s*securityPath/u,
   "preflight must exercise the exact prompt-backed Keychain write",
 );

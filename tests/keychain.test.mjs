@@ -144,6 +144,92 @@ test("chunked Keychain credentials round-trip with digest validation", () => {
   );
 });
 
+test("credential rotation removes the previous revision after commit", () => {
+  const keychain = createKeychainHarness();
+  saveCredential(credential.connectionId, credential, keychain.run);
+  const previousChunks = [...keychain.entries.keys()].filter(
+    (account) => account !== credential.connectionId,
+  );
+  const rotated = { ...credential, refreshToken: "rotated-refresh-token" };
+
+  saveCredential(credential.connectionId, rotated, keychain.run);
+
+  assert.deepEqual(
+    loadCredential(
+      credential.connectionId,
+      keychain.run,
+      () => undefined,
+    ),
+    rotated,
+  );
+  assert.ok(previousChunks.every((account) => !keychain.entries.has(account)));
+});
+
+test("a partial write preserves the previous readable revision", () => {
+  const keychain = createKeychainHarness();
+  saveCredential(credential.connectionId, credential, keychain.run);
+  const previousEntries = new Map(keychain.entries);
+  keychain.failNextWrite("partial");
+
+  assert.throws(
+    () =>
+      saveCredential(
+        credential.connectionId,
+        { ...credential, refreshToken: "uncommitted-refresh-token" },
+        keychain.run,
+      ),
+    /revoke this connection and pair again/iu,
+  );
+  assert.deepEqual(keychain.entries, previousEntries);
+  assert.deepEqual(
+    loadCredential(
+      credential.connectionId,
+      keychain.run,
+      () => undefined,
+    ),
+    credential,
+  );
+});
+
+test("an ambiguous helper failure accepts a complete committed revision", () => {
+  const keychain = createKeychainHarness();
+  saveCredential(credential.connectionId, credential, keychain.run);
+  const previousChunks = [...keychain.entries.keys()].filter(
+    (account) => account !== credential.connectionId,
+  );
+  const rotated = { ...credential, refreshToken: "committed-refresh-token" };
+  keychain.failNextWrite("after_commit");
+
+  saveCredential(credential.connectionId, rotated, keychain.run);
+
+  assert.deepEqual(
+    loadCredential(
+      credential.connectionId,
+      keychain.run,
+      () => undefined,
+    ),
+    rotated,
+  );
+  assert.ok(previousChunks.every((account) => !keychain.entries.has(account)));
+});
+
+test("legacy single-entry credentials remain readable", () => {
+  const keychain = createKeychainHarness();
+  keychain.entries.set(
+    credential.connectionId,
+    Buffer.from(JSON.stringify(credential)).toString("base64"),
+  );
+
+  assert.deepEqual(
+    loadCredential(
+      credential.connectionId,
+      keychain.run,
+      () => undefined,
+    ),
+    credential,
+  );
+});
+
 test("invalid connection identifiers are rejected before Keychain invocation", () => {
   for (const invalid of [
     undefined,
@@ -191,3 +277,43 @@ test("Keychain helper failures return credential-free guidance", () => {
     },
   );
 });
+
+function createKeychainHarness() {
+  const entries = new Map();
+  let nextWriteFailure = null;
+  return {
+    entries,
+    failNextWrite(mode) {
+      nextWriteFailure = mode;
+    },
+    run(file, args, options) {
+      if (file === "/usr/bin/expect") {
+        const [, , countText, ...entryLines] = options.input.split("\n");
+        const count = Number(countText);
+        for (let index = 0; index < count; index += 1) {
+          const account = entryLines[index * 2];
+          const secret = entryLines[index * 2 + 1];
+          entries.set(account, secret);
+          if (nextWriteFailure === "partial" && index === 0) {
+            nextWriteFailure = null;
+            throw new Error("simulated partial write");
+          }
+        }
+        if (nextWriteFailure === "after_commit") {
+          nextWriteFailure = null;
+          throw new Error("simulated ambiguous committed write");
+        }
+        return "";
+      }
+      assert.equal(file, "/usr/bin/security");
+      const account = args[args.indexOf("-a") + 1];
+      if (args[0] === "find-generic-password") {
+        if (!entries.has(account)) throw new Error("missing item");
+        return `${entries.get(account)}\n`;
+      }
+      assert.equal(args[0], "delete-generic-password");
+      entries.delete(account);
+      return "";
+    },
+  };
+}

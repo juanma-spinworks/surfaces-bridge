@@ -428,6 +428,15 @@ export function saveCredential(
   } catch {
     const currentManifest = readExistingKeychainManifest(connectionId, run);
     if (currentManifest?.revision === stored.manifest.revision) {
+      if (keychainRevisionIsComplete(connectionId, currentManifest, run)) {
+        if (previousManifest) {
+          deleteKeychainAccounts(
+            keychainChunkAccounts(connectionId, previousManifest),
+            run,
+          );
+        }
+        return;
+      }
       deleteKeychainAccounts([connectionId], run);
     }
     deleteKeychainAccounts(stored.chunkAccounts, run);
@@ -616,6 +625,20 @@ function keychainChunkAccounts(connectionId, manifest) {
     (_, index) =>
       `${connectionId}.v2.${manifest.revision}.${String(index).padStart(2, "0")}`,
   );
+}
+
+function keychainRevisionIsComplete(connectionId, manifest, run) {
+  try {
+    const encoded = keychainChunkAccounts(connectionId, manifest)
+      .map((account) => readKeychainSecret(account, run))
+      .join("");
+    return (
+      createHash("sha256").update(encoded).digest("base64url") ===
+      manifest.digest
+    );
+  } catch {
+    return false;
+  }
 }
 
 function deleteKeychainAccounts(
