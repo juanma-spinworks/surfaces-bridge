@@ -10,6 +10,7 @@
   "files": [
     "README.md",
     "origin-policy.mjs",
+    "release-source-manifest.json",
     "surfaces-bridge.mjs"
   ],
   "engines": {

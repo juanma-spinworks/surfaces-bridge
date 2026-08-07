@@ -7,6 +7,12 @@ assert.ok(packPath && outputPath, "pack and output paths are required");
 const packageManifest = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 );
+const releaseSource = JSON.parse(
+  readFileSync(
+    new URL("../release-source-manifest.json", import.meta.url),
+    "utf8",
+  ),
+);
 const source = readFileSync(
   new URL("../surfaces-bridge.mjs", import.meta.url),
   "utf8",
@@ -53,6 +59,8 @@ const releaseManifest = {
     unpackedSize: pack.unpackedSize,
   },
   protocolVersion: protocolMatch.groups.version,
+  applicationSource: releaseSource.applicationSource,
+  sourceFiles: releaseSource.files,
   source: {
     repository: `${githubServerUrl}/${githubRepository}`,
     commit: githubSha,

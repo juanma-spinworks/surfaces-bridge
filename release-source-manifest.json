@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "surfaces.bridge.source.v1",
+  "package": {
+    "name": "@spinworks-ai/surfaces-bridge",
+    "version": "0.1.0"
+  },
+  "applicationSource": {
+    "repository": "juanma-spinworks/surfaces",
+    "commit": "974393896bbbaac1fb7f530a96fa334d038fd30d"
+  },
+  "files": {
+    "surfaces-bridge.mjs": {
+      "sha256": "110223452d48a7abfa8e6d3cadde820b05cbd687eb3ce4a271d09f5a4894ba0c"
+    },
+    "origin-policy.mjs": {
+      "sha256": "9435835a6370be1e9b08b50f7c875c41729ee1b66b777116a20e16b9b218d0dc"
+    }
+  }
+}

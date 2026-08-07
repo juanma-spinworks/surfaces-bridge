@@ -27,6 +27,7 @@ for (const expected of [
   "npm stage publish --access public",
   "NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}",
   "verify-published-release.mjs",
+  "release-source-manifest.json",
 ]) {
   assert.match(workflow, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "u"));
 }

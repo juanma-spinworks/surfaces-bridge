@@ -20,6 +20,9 @@ therefore be a narrowly controlled bootstrap:
    the repository plan supports that rule.
 2. Confirm `main` CI is green, then create and push the immutable tag `v0.1.0`
    at the exact current `main` commit.
+   Before tagging, confirm `release-source-manifest.json` names the exact green
+   application commit and that its two SHA-256 values match that commit's
+   bridge and origin-policy sources.
 3. Create a short-lived granular access token limited to the `spinworks-ai`
    organization and package publication. Put it only in the `npm-production`
    environment secret `NPM_BOOTSTRAP_TOKEN`.
