@@ -70,8 +70,10 @@ signing private key, repository credential, or environment secret. Pairing
 codes are short-lived and single-use. The Surfaces server also enforces an
 exact self-reported bridge-version compatibility policy; a public package alone
 is not authority to connect. Package integrity and provenance authenticate the
-artifact. Connection and refresh-family revocation provide server-side
-containment.
+artifact. The package also contains `release-source-manifest.json`, which binds
+the exact version and public source to the application-tested bridge and
+origin-policy SHA-256 hashes. Connection and refresh-family revocation provide
+server-side containment.
 
 Please report vulnerabilities privately using the instructions in
 [SECURITY.md](SECURITY.md).
@@ -82,5 +84,6 @@ Please report vulnerabilities privately using the instructions in
 npm test
 ```
 
-The check validates the manifest, dependency-free boundary, executable version,
-trusted-origin policy, and exact npm tarball contents.
+The check validates the manifest, application-source parity, dependency-free
+boundary, executable version, trusted-origin policy, and exact npm tarball
+contents.

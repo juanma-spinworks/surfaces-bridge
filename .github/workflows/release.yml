@@ -63,6 +63,7 @@ jobs:
       - name: Fingerprint the exact package boundary
         id: candidate
         run: |
+          test -f release-source-manifest.json
           npm pack --dry-run --json > release-pack.json
           node scripts/create-release-manifest.mjs \
             release-pack.json \
@@ -115,6 +116,7 @@ jobs:
           test "$(npm --version)" = "11.15.0"
       - name: Reverify approved source
         run: |
+          test -f release-source-manifest.json
           node scripts/release-preflight.mjs
           npm test
           npm pack --dry-run --json > release-pack.json
@@ -185,6 +187,7 @@ jobs:
           test "$(npm --version)" = "11.15.0"
       - name: Reverify approved source
         run: |
+          test -f release-source-manifest.json
           node scripts/release-preflight.mjs
           npm test
           npm pack --dry-run --json > release-pack.json

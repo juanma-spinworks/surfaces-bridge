@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
@@ -6,6 +7,18 @@ const source = readFileSync(
   new URL("../surfaces-bridge.mjs", import.meta.url),
   "utf8",
 );
+const originPolicy = readFileSync(
+  new URL("../origin-policy.mjs", import.meta.url),
+  "utf8",
+);
+const releaseSource = JSON.parse(
+  readFileSync(
+    new URL("../release-source-manifest.json", import.meta.url),
+    "utf8",
+  ),
+);
+
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 assert.equal(manifest.name, "@spinworks-ai/surfaces-bridge");
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/u);
@@ -26,6 +39,7 @@ assert.deepEqual(
 assert.deepEqual(manifest.files, [
   "README.md",
   "origin-policy.mjs",
+  "release-source-manifest.json",
   "surfaces-bridge.mjs",
 ]);
 assert.equal(manifest.engines?.node, ">=22.14.0");
@@ -83,6 +97,35 @@ assert.match(
   source,
   /credential\.origin = resolveSurfaceOrigin\(credential\.origin/u,
   "stored credentials must revalidate the Surface origin before reuse",
+);
+
+assert.equal(releaseSource.schemaVersion, "surfaces.bridge.source.v1");
+assert.deepEqual(releaseSource.package, {
+  name: manifest.name,
+  version: manifest.version,
+});
+assert.equal(
+  releaseSource.applicationSource?.repository,
+  "juanma-spinworks/surfaces",
+);
+assert.match(
+  releaseSource.applicationSource?.commit ?? "",
+  /^[0-9a-f]{40}$/u,
+  "application source must be an exact Git commit",
+);
+assert.deepEqual(
+  Object.keys(releaseSource.files ?? {}).sort(),
+  ["origin-policy.mjs", "surfaces-bridge.mjs"],
+);
+assert.equal(
+  releaseSource.files["surfaces-bridge.mjs"].sha256,
+  sha256(source),
+  "bridge source differs from the application-tested hash",
+);
+assert.equal(
+  releaseSource.files["origin-policy.mjs"].sha256,
+  sha256(originPolicy),
+  "origin policy differs from the application-tested hash",
 );
 
 process.stdout.write(
