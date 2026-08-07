@@ -74,12 +74,12 @@ assert.match(
 assert.ok(source.startsWith("#!/usr/bin/env node\n"));
 assert.match(
   source,
-  /const roleContext = await signedFetch\(\s*credential,\s*"GET",\s*"\/api\/agent\/context"/u,
+  /const roleContext = await connectionStage\([\s\S]*?"context"[\s\S]*?signedFetch\(\s*credential,\s*"GET",\s*"\/api\/agent\/context"/u,
   "connect must fetch signed role context in the same ephemeral invocation",
 );
 assert.match(
   source,
-  /const presence = await signedFetch\(\s*credential,\s*"POST",\s*"\/api\/agent\/presence"/u,
+  /const presence = await connectionStage\([\s\S]*?"presence"[\s\S]*?signedFetch\(\s*credential,\s*"POST",\s*"\/api\/agent\/presence"/u,
   "connect must create an explicit presence lease in the same invocation",
 );
 assert.doesNotMatch(
@@ -89,8 +89,33 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /assertMacKeychain\(\);\s*assertKeychainWritable\(\);\s*const \{ publicKey, privateKey \}/u,
-  "Keychain writes must be proven before the pairing is consumed",
+  /"platform_check"[\s\S]*"capability_detection"[\s\S]*"credential_store_preflight"[\s\S]*assertKeychainWritable\(\)[\s\S]*"key_generation"[\s\S]*generateKeyPairSync\("ed25519"\)[\s\S]*"pairing_start"/u,
+  "platform, provider, Keychain, and local key checks must precede pairing consumption",
+);
+assert.match(
+  source,
+  /clientVersion: BRIDGE_VERSION,\s*capability,\s*code: input\.code/u,
+  "pairing start must carry the bounded provider capability report",
+);
+assert.match(
+  source,
+  /process\.stderr\.write\(`\$\{JSON\.stringify\(diagnostic\)\}\\n`\)/u,
+  "connection failures must emit machine-readable staged diagnostics",
+);
+assert.match(
+  source,
+  /body: JSON\.stringify\(\{\s*code,\s*failureStage: diagnostic\.stage,\s*failureCode: diagnostic\.code,\s*\}\)/u,
+  "failure analytics must contain only the pairing credential and fixed diagnostic identifiers",
+);
+assert.match(
+  source,
+  /function isConnectionFailure\(stage, code\)[\s\S]*CONNECTION_FAILURE_POLICY\[stage\]\?\.includes\(code\) === true/u,
+  "failure analytics must use the closed stage and code policy",
+);
+assert.doesNotMatch(
+  source,
+  /body: JSON\.stringify\(\{[\s\S]{0,160}(?:message|repair|prompt):/u,
+  "failure analytics must not submit error text, repair text, or prompts",
 );
 assert.match(
   source,
@@ -104,8 +129,23 @@ assert.match(
 );
 assert.match(
   source,
-  /\$\{KEYCHAIN_SERVICE\}\\n\$\{securityPath\}\\n\$\{encoded\}/u,
-  "the fixed security binary and credential must be supplied through stdin",
+  /\$\{KEYCHAIN_SERVICE\}\\n\$\{securityPath\}\\n\$\{entries\.length\}\\n/u,
+  "the fixed security binary and entry count must be supplied through stdin",
+);
+assert.match(
+  source,
+  /KEYCHAIN_CHUNK_LENGTH = 96[\s\S]*surfaces-keychain-v2/u,
+  "bounded credentials must use versioned sub-128-byte Keychain chunks",
+);
+assert.match(
+  source,
+  /createHash\("sha256"\)\.update\(encoded\)\.digest\("base64url"\)/u,
+  "chunked Keychain credentials must carry an integrity digest",
+);
+assert.match(
+  source,
+  /Buffer\.byteLength\(entry\.secret, "utf8"\) >= 128/u,
+  "the bridge must refuse secrets at the interactive Keychain limit",
 );
 assert.match(
   source,
@@ -131,6 +171,11 @@ assert.match(
   source,
   /credential\.origin = resolveSurfaceOrigin\(credential\.origin/u,
   "stored credentials must revalidate the Surface origin before reuse",
+);
+assert.ok(
+  source.indexOf("export class BridgeDiagnosticError") <
+    source.lastIndexOf("if (isDirectExecution())"),
+  "direct CLI execution must begin only after diagnostic classes initialize",
 );
 
 assert.equal(releaseSource.schemaVersion, "surfaces.bridge.source.v1");
