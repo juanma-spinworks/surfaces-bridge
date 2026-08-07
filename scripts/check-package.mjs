@@ -11,6 +11,10 @@ const originPolicy = readFileSync(
   new URL("../origin-policy.mjs", import.meta.url),
   "utf8",
 );
+const readme = readFileSync(
+  new URL("../README.md", import.meta.url),
+  "utf8",
+);
 const releaseSource = JSON.parse(
   readFileSync(
     new URL("../release-source-manifest.json", import.meta.url),
@@ -32,7 +36,12 @@ assert.deepEqual(
   {
     check:
       "node scripts/check-package.mjs && node scripts/check-release-workflow.mjs && npm pack --dry-run --json",
-    test: "node --test tests/*.test.mjs && npm run check",
+    test:
+      "node --test tests/keychain.test.mjs tests/origin-policy.test.mjs && npm run check && npm run test:clean-consumer",
+    "test:clean-consumer":
+      "node scripts/check-clean-consumer.mjs",
+    "test:keychain-macos":
+      "node --test tests/keychain-macos.test.mjs",
   },
   "npm publish lifecycle scripts must remain absent",
 );
@@ -90,6 +99,31 @@ assert.match(
 );
 assert.match(
   source,
+  /securityPath = "\/usr\/bin\/security"[\s\S]*run\(\s*"\/usr\/bin\/expect",\s*\["-c", KEYCHAIN_WRITE_SCRIPT\]/u,
+  "Keychain writes must use the prompt-backed input channel",
+);
+assert.match(
+  source,
+  /\$\{KEYCHAIN_SERVICE\}\\n\$\{securityPath\}\\n\$\{encoded\}/u,
+  "the fixed security binary and credential must be supplied through stdin",
+);
+assert.match(
+  source,
+  /writeKeychainSecret\(\s*probeAccount,\s*"surfaces-keychain-write-probe",\s*run,\s*securityPath/u,
+  "preflight must exercise the exact prompt-backed Keychain write",
+);
+assert.doesNotMatch(
+  source,
+  /"-w",\s*encoded/u,
+  "long-lived credentials must never be passed in process argv",
+);
+assert.match(
+  source,
+  /typeof connectionId !== "string" \|\|\s*!CONNECTION_ID_PATTERN\.test\(connectionId\)/u,
+  "connection identifiers must reject non-string server values",
+);
+assert.match(
+  source,
   /resolveSurfaceOrigin\(required\(args, "origin"\)/u,
   "connect must validate the Surface origin before sending the pairing code",
 );
@@ -126,6 +160,16 @@ assert.equal(
   releaseSource.files["origin-policy.mjs"].sha256,
   sha256(originPolicy),
   "origin policy differs from the application-tested hash",
+);
+assert.match(
+  readme,
+  /https:\/\/github\.com\/juanma-spinworks\/surfaces-bridge\/security\/policy/u,
+  "the packaged security-reporting link must resolve outside the tarball",
+);
+assert.doesNotMatch(
+  readme,
+  /\[SECURITY\.md\]\(SECURITY\.md\)/u,
+  "the packaged README must not link to an excluded relative file",
 );
 
 process.stdout.write(

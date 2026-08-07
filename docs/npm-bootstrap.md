@@ -23,9 +23,16 @@ therefore be a narrowly controlled bootstrap:
    Before tagging, confirm `release-source-manifest.json` names the exact green
    application commit and that its two SHA-256 values match that commit's
    bridge and origin-policy sources.
-3. Create a short-lived granular access token limited to the `spinworks-ai`
-   organization and package publication. Put it only in the `npm-production`
-   environment secret `NPM_BOOTSTRAP_TOKEN`.
+3. Create a shortest-lived granular access token with:
+   - **Bypass 2FA** enabled, because the first direct publication is
+     noninteractive;
+   - **Packages and scopes** Read and write access to the `@spinworks-ai`
+     scope, not merely Organizations permission; and
+   - no unrelated package, organization-management, or user-management access.
+   Put it only in the `npm-production` environment secret
+   `NPM_BOOTSTRAP_TOKEN`. This is a one-release bootstrap exception: npm
+   requires interactive 2FA or a write token with Bypass 2FA for direct
+   package creation.
 4. Run **Release npm package** from `main` with:
    - version: `0.1.0`
    - mode: `bootstrap`
@@ -37,8 +44,8 @@ therefore be a narrowly controlled bootstrap:
    `npm publish --access public --provenance`, compares the live registry
    integrity with the approved candidate, and runs `npm audit signatures` from
    a clean temporary consumer.
-7. Delete the GitHub environment secret and revoke the bootstrap token
-   immediately after the verified release.
+7. Delete the GitHub environment secret and revoke the Bypass-2FA bootstrap
+   token immediately after the verified release, then verify both are absent.
 8. Preserve the workflow run and `verified-release-0.1.0` evidence artifact,
    then repeat clean-Mac Codex and Claude enrollment before external alpha.
 

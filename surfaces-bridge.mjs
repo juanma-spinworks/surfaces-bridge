@@ -7,9 +7,17 @@ import {
   sign,
 } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { resolveSurfaceOrigin } from "./origin-policy.mjs";
 
@@ -17,6 +25,43 @@ const PROTOCOL_VERSION = "surfaces.coms.v1";
 const BRIDGE_KIND = "surfaces-bridge";
 const BRIDGE_VERSION = "0.1.0";
 const KEYCHAIN_SERVICE = "com.slangworks.surfaces.bridge";
+const CONNECTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
+export const KEYCHAIN_WRITE_SCRIPT = String.raw`
+set timeout 30
+log_user 0
+
+if {[gets stdin account] < 0} { exit 64 }
+if {[gets stdin service] < 0} { exit 64 }
+if {[gets stdin security_path] < 0} { exit 64 }
+if {[gets stdin secret] < 0} { exit 64 }
+
+spawn -noecho $security_path add-generic-password -U -a $account -s $service -w
+set prompt_count 0
+expect {
+  -re {(?i)password[^:]*:[[:space:]]*$} {
+    incr prompt_count
+    if {$prompt_count > 2} {
+      catch {exec /bin/kill -TERM [exp_pid]}
+      catch {close}
+      catch {wait}
+      exit 65
+    }
+    send -- "$secret\r"
+    exp_continue
+  }
+  eof {
+    set result [wait]
+    if {$prompt_count < 1 || $prompt_count > 2} { exit 66 }
+    exit [lindex $result 3]
+  }
+  timeout {
+    catch {exec /bin/kill -TERM [exp_pid]}
+    catch {close}
+    catch {wait}
+    exit 67
+  }
+}
+`;
 const METADATA_DIRECTORY = join(
   homedir(),
   ".config",
@@ -24,31 +69,36 @@ const METADATA_DIRECTORY = join(
   "connections",
 );
 
-const [command, ...argumentList] = process.argv.slice(2);
-const argumentsByName = parseArguments(argumentList);
+if (isDirectExecution()) {
+  await runCli(process.argv.slice(2));
+}
 
-try {
-  if (command === "connect") {
-    await connect(argumentsByName);
-  } else if (command === "context") {
-    await context(argumentsByName);
-  } else if (command === "event") {
-    await event(argumentsByName);
-  } else if (command === "presence") {
-    await presence(argumentsByName);
-  } else if (command === "refresh") {
-    await refresh(argumentsByName);
-  } else if (command === "status") {
-    status(argumentsByName);
-  } else {
-    printUsage();
-    process.exitCode = command ? 1 : 0;
+async function runCli(values) {
+  const [command, ...argumentList] = values;
+  const argumentsByName = parseArguments(argumentList);
+  try {
+    if (command === "connect") {
+      await connect(argumentsByName);
+    } else if (command === "context") {
+      await context(argumentsByName);
+    } else if (command === "event") {
+      await event(argumentsByName);
+    } else if (command === "presence") {
+      await presence(argumentsByName);
+    } else if (command === "refresh") {
+      await refresh(argumentsByName);
+    } else if (command === "status") {
+      status(argumentsByName);
+    } else {
+      printUsage();
+      process.exitCode = command ? 1 : 0;
+    }
+  } catch (error) {
+    process.stderr.write(
+      `Surfaces bridge: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exitCode = 1;
   }
-} catch (error) {
-  process.stderr.write(
-    `Surfaces bridge: ${error instanceof Error ? error.message : String(error)}\n`,
-  );
-  process.exitCode = 1;
 }
 
 async function connect(args) {
@@ -77,6 +127,9 @@ async function connect(args) {
   if (!challenge?.message || !challenge.connectionId) {
     throw new Error("The Surface returned an invalid connection challenge.");
   }
+  const challengeConnectionId = assertConnectionId(
+    challenge.connectionId,
+  );
 
   const signature = sign(null, Buffer.from(challenge.message), privateKey);
   const completed = await jsonFetch(
@@ -84,7 +137,7 @@ async function connect(args) {
     {
       method: "POST",
       body: JSON.stringify({
-        connectionId: challenge.connectionId,
+        connectionId: challengeConnectionId,
         challengeId: challenge.challengeId,
         nonce: challenge.nonce,
         signature: encodeBase64Url(signature),
@@ -95,10 +148,11 @@ async function connect(args) {
   if (!connection?.accessToken) {
     throw new Error("The Surface did not issue a bounded agent session.");
   }
+  const connectionId = assertConnectionId(connection.connectionId);
 
   const credential = {
     origin,
-    connectionId: connection.connectionId,
+    connectionId,
     accessToken: connection.accessToken,
     tokenExpiresAt: connection.tokenExpiresAt,
     refreshToken: connection.refreshToken,
@@ -106,9 +160,9 @@ async function connect(args) {
     privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }),
     ...(allowLocalOrigin ? { allowLocalOrigin: true } : {}),
   };
-  saveCredential(connection.connectionId, credential);
+  saveCredential(connectionId, credential);
   saveMetadata({
-    connectionId: connection.connectionId,
+    connectionId,
     origin,
     clientKind: BRIDGE_KIND,
     clientVersion: BRIDGE_VERSION,
@@ -132,7 +186,7 @@ async function connect(args) {
 
   writeJson({
     connected: true,
-    connectionId: connection.connectionId,
+    connectionId,
     role: connection.role,
     tokenExpiresAt: connection.tokenExpiresAt,
     context: roleContext,
@@ -140,7 +194,7 @@ async function connect(args) {
     followUp: {
       instruction:
         "Reuse the same pinned npm exec package prefix for every follow-up bridge command.",
-      connectionArgument: `--connection ${connection.connectionId}`,
+      connectionArgument: `--connection ${connectionId}`,
     },
   });
 }
@@ -339,23 +393,15 @@ async function jsonFetch(url, init) {
   return payload;
 }
 
-function saveCredential(connectionId, credential) {
+export function saveCredential(
+  connectionId,
+  credential,
+  run = execFileSync,
+) {
+  assertConnectionId(connectionId);
   const encoded = Buffer.from(JSON.stringify(credential)).toString("base64");
   try {
-    execFileSync(
-      "security",
-      [
-        "add-generic-password",
-        "-U",
-        "-a",
-        connectionId,
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-w",
-        encoded,
-      ],
-      { stdio: "ignore" },
-    );
+    writeKeychainSecret(connectionId, encoded, run);
   } catch {
     throw new Error(
       "macOS Keychain rejected credential storage. Revoke this connection and pair again outside the provider sandbox.",
@@ -363,12 +409,36 @@ function saveCredential(connectionId, credential) {
   }
 }
 
+function writeKeychainSecret(
+  connectionId,
+  encoded,
+  run = execFileSync,
+  securityPath = "/usr/bin/security",
+) {
+  assertConnectionId(connectionId);
+  run(
+    "/usr/bin/expect",
+    ["-c", KEYCHAIN_WRITE_SCRIPT],
+    {
+      encoding: "utf8",
+      env: {
+        HOME: homedir(),
+        PATH: "/usr/bin:/bin",
+      },
+      input:
+        `${connectionId}\n${KEYCHAIN_SERVICE}\n${securityPath}\n${encoded}\n`,
+      stdio: ["pipe", "ignore", "ignore"],
+      timeout: 35_000,
+    },
+  );
+}
+
 function loadCredential(connectionId) {
   assertMacKeychain();
   let encoded;
   try {
     encoded = execFileSync(
-      "security",
+      "/usr/bin/security",
       [
         "find-generic-password",
         "-a",
@@ -416,7 +486,7 @@ function readMetadata(connectionId) {
 }
 
 function resolveConnectionId(args) {
-  if (args.connection) return args.connection;
+  if (args.connection) return assertConnectionId(args.connection);
   let entries;
   try {
     entries = readdirSync(METADATA_DIRECTORY)
@@ -430,7 +500,7 @@ function resolveConnectionId(args) {
       "Specify --connection when zero or multiple connections exist.",
     );
   }
-  return entries[0].replace(/\.json$/u, "");
+  return assertConnectionId(entries[0].replace(/\.json$/u, ""));
 }
 
 function readEventPayload(args) {
@@ -474,27 +544,30 @@ function assertMacKeychain() {
       "The MVP reference bridge currently requires macOS Keychain.",
     );
   }
+  if (
+    !existsSync("/usr/bin/security") ||
+    !existsSync("/usr/bin/expect")
+  ) {
+    throw new Error(
+      "The MVP reference bridge requires the macOS security and expect tools.",
+    );
+  }
 }
 
-function assertKeychainWritable() {
-  const probeAccount = `probe:${randomUUID()}`;
+export function assertKeychainWritable(
+  run = execFileSync,
+  securityPath = "/usr/bin/security",
+) {
+  const probeAccount = `probe_${randomUUID()}`;
   try {
-    execFileSync(
-      "security",
-      [
-        "add-generic-password",
-        "-U",
-        "-a",
-        probeAccount,
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-w",
-        "surfaces-keychain-write-probe",
-      ],
-      { stdio: "ignore" },
+    writeKeychainSecret(
+      probeAccount,
+      "surfaces-keychain-write-probe",
+      run,
+      securityPath,
     );
-    execFileSync(
-      "security",
+    run(
+      securityPath,
       [
         "delete-generic-password",
         "-a",
@@ -506,8 +579,8 @@ function assertKeychainWritable() {
     );
   } catch {
     try {
-      execFileSync(
-        "security",
+      run(
+        securityPath,
         [
           "delete-generic-password",
           "-a",
@@ -523,6 +596,25 @@ function assertKeychainWritable() {
     throw new Error(
       "macOS Keychain access is unavailable. Run the bridge outside the provider sandbox or approve Keychain access before pairing.",
     );
+  }
+}
+
+function assertConnectionId(connectionId) {
+  if (
+    typeof connectionId !== "string" ||
+    !CONNECTION_ID_PATTERN.test(connectionId)
+  ) {
+    throw new Error("The Surface returned an invalid connection identifier.");
+  }
+  return connectionId;
+}
+
+function isDirectExecution() {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
   }
 }
 

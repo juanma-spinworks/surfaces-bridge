@@ -53,9 +53,12 @@ assert.match(preflight, /refs\/tags\/v\$\{version\}\^\{commit\}/u);
 assert.match(preflight, /origin\/main/u);
 
 for (const phrase of [
+  "Bypass 2FA",
   "npm-production",
   "NPM_BOOTSTRAP_TOKEN",
   "npm CLI 11.15.0",
+  "Packages and scopes",
+  "Read and write",
   "trusted-stage",
   "stage-only",
   "Require two-factor authentication and disallow tokens",
