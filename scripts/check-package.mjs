@@ -107,6 +107,11 @@ assert.match(
   /body: JSON\.stringify\(\{\s*code,\s*failureStage: diagnostic\.stage,\s*failureCode: diagnostic\.code,\s*\}\)/u,
   "failure analytics must contain only the pairing credential and fixed diagnostic identifiers",
 );
+assert.match(
+  source,
+  /function isConnectionFailure\(stage, code\)[\s\S]*CONNECTION_FAILURE_POLICY\[stage\]\?\.includes\(code\) === true/u,
+  "failure analytics must use the closed stage and code policy",
+);
 assert.doesNotMatch(
   source,
   /body: JSON\.stringify\(\{[\s\S]{0,160}(?:message|repair|prompt):/u,

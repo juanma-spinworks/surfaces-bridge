@@ -29,17 +29,28 @@ const CONNECTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 const VERSION_PATTERN = /\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/u;
 const OS_VERSION_PATTERN = /\b\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\b/u;
 const PROVIDERS = new Set(["codex", "claude"]);
+const CONNECTION_FAILURE_POLICY = Object.freeze({
+  platform_check: Object.freeze(["unsupported_local_platform"]),
+  capability_detection: Object.freeze(["provider_capability_unavailable"]),
+  credential_store_preflight: Object.freeze(["keychain_preflight_failed"]),
+  key_generation: Object.freeze(["device_key_generation_failed"]),
+  pairing_start: Object.freeze([
+    "pairing_start_failed",
+    "pairing_challenge_invalid",
+    "capability_report_invalid",
+    "provider_role_mismatch",
+  ]),
+  proof_completion: Object.freeze([
+    "proof_completion_failed",
+    "bounded_session_missing",
+  ]),
+  credential_store: Object.freeze(["credential_store_failed"]),
+  context: Object.freeze(["initial_context_failed"]),
+  presence: Object.freeze(["initial_presence_failed"]),
+});
 const CONNECTION_STAGES = new Set([
   "input_validation",
-  "platform_check",
-  "capability_detection",
-  "credential_store_preflight",
-  "key_generation",
-  "pairing_start",
-  "proof_completion",
-  "credential_store",
-  "context",
-  "presence",
+  ...Object.keys(CONNECTION_FAILURE_POLICY),
 ]);
 export const KEYCHAIN_WRITE_SCRIPT = String.raw`
 set timeout 30
@@ -341,10 +352,7 @@ async function diagnose(args) {
 
 async function reportConnectionFailure(args, diagnostic) {
   if (
-    !CONNECTION_STAGES.has(diagnostic.stage) ||
-    diagnostic.stage === "input_validation" ||
-    typeof diagnostic.code !== "string" ||
-    !/^[a-z][a-z0-9_]{2,63}$/u.test(diagnostic.code)
+    !isConnectionFailure(diagnostic.stage, diagnostic.code)
   ) {
     return;
   }
@@ -476,6 +484,14 @@ export function diagnosticFromError(error) {
     message: error instanceof Error ? error.message : String(error),
     repair: "Check the command arguments and retry.",
   };
+}
+
+export function isConnectionFailure(stage, code) {
+  return (
+    typeof stage === "string" &&
+    typeof code === "string" &&
+    CONNECTION_FAILURE_POLICY[stage]?.includes(code) === true
+  );
 }
 
 export function detectProviderCapability(

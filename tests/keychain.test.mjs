@@ -7,6 +7,7 @@ import {
   assertKeychainWritable,
   detectProviderCapability,
   diagnosticFromError,
+  isConnectionFailure,
   saveCredential,
 } from "../surfaces-bridge.mjs";
 
@@ -212,5 +213,23 @@ test("connection failures expose a stable repairable stage", () => {
       message: "The CLI was not found.",
       repair: "Install the selected provider CLI and retry.",
     },
+  );
+});
+
+test("connection analytics allows only fixed stage and code pairs", () => {
+  assert.equal(
+    isConnectionFailure(
+      "capability_detection",
+      "provider_capability_unavailable",
+    ),
+    true,
+  );
+  assert.equal(
+    isConnectionFailure("pairing_start", "provider_capability_unavailable"),
+    false,
+  );
+  assert.equal(
+    isConnectionFailure("presence", "secret_token_abcdef"),
+    false,
   );
 });

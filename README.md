@@ -55,7 +55,8 @@ fetches the signed role context, and renews an explicit 90-second presence
 lease in the same ephemeral invocation. Connection failures emit one JSON
 diagnostic with a stable stage, code, and repair action. The bridge reports
 only the stage and code to the pairing origin; it does not send the error or
-repair text.
+repair text. Both fields come from a fixed bridge allowlist; arbitrary local
+error fragments are never accepted as analytics identifiers.
 
 The bridge renews presence only when explicitly invoked. It is not a daemon and
 does not promise to wake a closed or inactive provider session.
