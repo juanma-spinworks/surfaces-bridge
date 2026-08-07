@@ -18,8 +18,10 @@ therefore be a narrowly controlled bootstrap:
 1. Create the public-repository GitHub environment `npm-production`. Restrict it
    to `main`, require a maintainer review, and disallow administrator bypass if
    the repository plan supports that rule.
-2. Confirm `main` CI is green, then create and push the immutable tag `v0.1.0`
-   at the exact current `main` commit.
+2. Require the strict successful `package` and `keychain-macos` checks on
+   protected `main`, with stale approvals dismissed. Read the protection rule
+   back, confirm both checks are green on the exact merge commit, then create
+   and push the immutable tag `v0.1.0` at that commit.
    Before tagging, confirm `release-source-manifest.json` names the exact green
    application commit and that its two SHA-256 values match that commit's
    bridge and origin-policy sources.
