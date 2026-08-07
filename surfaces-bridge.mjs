@@ -25,42 +25,58 @@ const PROTOCOL_VERSION = "surfaces.coms.v1";
 const BRIDGE_KIND = "surfaces-bridge";
 const BRIDGE_VERSION = "0.1.0";
 const KEYCHAIN_SERVICE = "com.slangworks.surfaces.bridge";
+const KEYCHAIN_CHUNK_LENGTH = 96;
+const KEYCHAIN_MANIFEST_PATTERN =
+  /^surfaces-keychain-v2:([0-9a-f]{32}):(\d{1,2}):([A-Za-z0-9_-]{43})$/u;
+const MAX_KEYCHAIN_CHUNKS = 64;
 const CONNECTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 export const KEYCHAIN_WRITE_SCRIPT = String.raw`
 set timeout 30
 log_user 0
 
-if {[gets stdin account] < 0} { exit 64 }
 if {[gets stdin service] < 0} { exit 64 }
 if {[gets stdin security_path] < 0} { exit 64 }
-if {[gets stdin secret] < 0} { exit 64 }
+if {[gets stdin entry_count] < 0} { exit 64 }
+if {![string is integer -strict $entry_count] || $entry_count < 1 || $entry_count > 65} {
+  exit 64
+}
 
-spawn -noecho $security_path add-generic-password -U -a $account -s $service -w
-set prompt_count 0
-expect {
-  -re {(?i)password[^:]*:[[:space:]]*$} {
-    incr prompt_count
-    if {$prompt_count > 2} {
+proc store_secret {security_path service account secret} {
+  spawn -noecho $security_path add-generic-password -U -a $account -s $service -w
+  set prompt_count 0
+  expect {
+    -re {(?i)password[^:]*:[[:space:]]*$} {
+      incr prompt_count
+      if {$prompt_count > 2} {
+        catch {exec /bin/kill -TERM [exp_pid]}
+        catch {close}
+        catch {wait}
+        return 65
+      }
+      send -- "$secret\r"
+      exp_continue
+    }
+    eof {
+      set result [wait]
+      if {$prompt_count < 1 || $prompt_count > 2} { return 66 }
+      return [lindex $result 3]
+    }
+    timeout {
       catch {exec /bin/kill -TERM [exp_pid]}
       catch {close}
       catch {wait}
-      exit 65
+      return 67
     }
-    send -- "$secret\r"
-    exp_continue
-  }
-  eof {
-    set result [wait]
-    if {$prompt_count < 1 || $prompt_count > 2} { exit 66 }
-    exit [lindex $result 3]
-  }
-  timeout {
-    catch {exec /bin/kill -TERM [exp_pid]}
-    catch {close}
-    catch {wait}
-    exit 67
   }
 }
+
+for {set entry_index 0} {$entry_index < $entry_count} {incr entry_index} {
+  if {[gets stdin account] < 0} { exit 64 }
+  if {[gets stdin secret] < 0} { exit 64 }
+  set result [store_secret $security_path $service $account $secret]
+  if {$result != 0} { exit $result }
+}
+exit 0
 `;
 const METADATA_DIRECTORY = join(
   homedir(),
@@ -399,14 +415,56 @@ export function saveCredential(
   run = execFileSync,
 ) {
   assertConnectionId(connectionId);
-  const encoded = Buffer.from(JSON.stringify(credential)).toString("base64");
+  const previousManifest = readExistingKeychainManifest(connectionId, run);
+  const stored = encodeCredentialForKeychain(connectionId, credential);
   try {
-    writeKeychainSecret(connectionId, encoded, run);
+    writeKeychainEntries(stored.entries, run);
+    if (previousManifest) {
+      deleteKeychainAccounts(
+        keychainChunkAccounts(connectionId, previousManifest),
+        run,
+      );
+    }
   } catch {
+    const currentManifest = readExistingKeychainManifest(connectionId, run);
+    if (currentManifest?.revision === stored.manifest.revision) {
+      deleteKeychainAccounts([connectionId], run);
+    }
+    deleteKeychainAccounts(stored.chunkAccounts, run);
     throw new Error(
       "macOS Keychain rejected credential storage. Revoke this connection and pair again outside the provider sandbox.",
     );
   }
+}
+
+export function encodeCredentialForKeychain(connectionId, credential) {
+  assertConnectionId(connectionId);
+  const encoded = Buffer.from(JSON.stringify(credential)).toString("base64");
+  const chunks = [];
+  for (let offset = 0; offset < encoded.length; offset += KEYCHAIN_CHUNK_LENGTH) {
+    chunks.push(encoded.slice(offset, offset + KEYCHAIN_CHUNK_LENGTH));
+  }
+  if (!chunks.length || chunks.length > MAX_KEYCHAIN_CHUNKS) {
+    throw new Error("The bounded Surfaces credential is too large for Keychain.");
+  }
+  const revision = randomUUID().replaceAll("-", "");
+  const digest = createHash("sha256").update(encoded).digest("base64url");
+  const manifest = { chunkCount: chunks.length, digest, revision };
+  const chunkAccounts = keychainChunkAccounts(connectionId, manifest);
+  return {
+    chunkAccounts,
+    entries: [
+      ...chunks.map((secret, index) => ({
+        account: chunkAccounts[index],
+        secret,
+      })),
+      {
+        account: connectionId,
+        secret: `surfaces-keychain-v2:${revision}:${chunks.length}:${digest}`,
+      },
+    ],
+    manifest,
+  };
 }
 
 function writeKeychainSecret(
@@ -416,6 +474,36 @@ function writeKeychainSecret(
   securityPath = "/usr/bin/security",
 ) {
   assertConnectionId(connectionId);
+  writeKeychainEntries(
+    [{ account: connectionId, secret: encoded }],
+    run,
+    securityPath,
+  );
+}
+
+function writeKeychainEntries(
+  entries,
+  run = execFileSync,
+  securityPath = "/usr/bin/security",
+) {
+  if (
+    !Array.isArray(entries) ||
+    !entries.length ||
+    entries.length > MAX_KEYCHAIN_CHUNKS + 1 ||
+    entries.some(
+      (entry) =>
+        !entry ||
+        typeof entry.account !== "string" ||
+        !entry.account ||
+        entry.account.includes("\n") ||
+        typeof entry.secret !== "string" ||
+        !entry.secret ||
+        entry.secret.includes("\n") ||
+        Buffer.byteLength(entry.secret, "utf8") >= 128,
+    )
+  ) {
+    throw new Error("The Keychain write request is invalid.");
+  }
   run(
     "/usr/bin/expect",
     ["-c", KEYCHAIN_WRITE_SCRIPT],
@@ -426,41 +514,132 @@ function writeKeychainSecret(
         PATH: "/usr/bin:/bin",
       },
       input:
-        `${connectionId}\n${KEYCHAIN_SERVICE}\n${securityPath}\n${encoded}\n`,
+        `${KEYCHAIN_SERVICE}\n${securityPath}\n${entries.length}\n` +
+        `${entries.flatMap((entry) => [entry.account, entry.secret]).join("\n")}\n`,
       stdio: ["pipe", "ignore", "ignore"],
       timeout: 35_000,
     },
   );
 }
 
-function loadCredential(connectionId) {
-  assertMacKeychain();
-  let encoded;
+export function loadCredential(
+  connectionId,
+  run = execFileSync,
+  platformCheck = assertMacKeychain,
+) {
+  platformCheck();
+  let stored;
   try {
-    encoded = execFileSync(
-      "/usr/bin/security",
-      [
-        "find-generic-password",
-        "-a",
-        connectionId,
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-w",
-      ],
-      { encoding: "utf8" },
-    ).trim();
+    stored = readKeychainSecret(connectionId, run);
   } catch {
     throw new Error(
       `No Keychain credential was found for ${connectionId}. Pair again.`,
     );
   }
-  const credential = JSON.parse(
-    Buffer.from(encoded, "base64").toString("utf8"),
-  );
+  let credential;
+  try {
+    const manifest = parseKeychainManifest(stored);
+    const encoded = manifest
+      ? keychainChunkAccounts(connectionId, manifest)
+          .map((account) => readKeychainSecret(account, run))
+          .join("")
+      : stored;
+    if (
+      manifest &&
+      createHash("sha256").update(encoded).digest("base64url") !==
+        manifest.digest
+    ) {
+      throw new Error("Keychain credential digest mismatch.");
+    }
+    credential = JSON.parse(
+      Buffer.from(encoded, "base64").toString("utf8"),
+    );
+    if (credential.connectionId !== connectionId) {
+      throw new Error("Keychain credential identity mismatch.");
+    }
+  } catch {
+    throw new Error(
+      `The Keychain credential for ${connectionId} is incomplete or damaged. Ask the human to revoke this connection and pair again.`,
+    );
+  }
   credential.origin = resolveSurfaceOrigin(credential.origin, {
     allowLocal: credential.allowLocalOrigin === true,
   });
   return credential;
+}
+
+function readKeychainSecret(account, run = execFileSync) {
+  return String(
+    run(
+      "/usr/bin/security",
+      [
+        "find-generic-password",
+        "-a",
+        account,
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-w",
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ),
+  ).trim();
+}
+
+function readExistingKeychainManifest(connectionId, run = execFileSync) {
+  try {
+    return parseKeychainManifest(readKeychainSecret(connectionId, run));
+  } catch {
+    return null;
+  }
+}
+
+function parseKeychainManifest(value) {
+  const match = String(value).match(KEYCHAIN_MANIFEST_PATTERN);
+  if (!match) return null;
+  const chunkCount = Number(match[2]);
+  if (
+    !Number.isSafeInteger(chunkCount) ||
+    chunkCount < 1 ||
+    chunkCount > MAX_KEYCHAIN_CHUNKS
+  ) {
+    throw new Error("The Keychain credential manifest is invalid.");
+  }
+  return { revision: match[1], chunkCount, digest: match[3] };
+}
+
+function keychainChunkAccounts(connectionId, manifest) {
+  return Array.from(
+    { length: manifest.chunkCount },
+    (_, index) =>
+      `${connectionId}.v2.${manifest.revision}.${String(index).padStart(2, "0")}`,
+  );
+}
+
+function deleteKeychainAccounts(
+  accounts,
+  run = execFileSync,
+  securityPath = "/usr/bin/security",
+) {
+  for (const account of accounts) {
+    try {
+      run(
+        securityPath,
+        [
+          "delete-generic-password",
+          "-a",
+          account,
+          "-s",
+          KEYCHAIN_SERVICE,
+        ],
+        { stdio: "ignore" },
+      );
+    } catch {
+      // The entry does not exist or this sandbox cannot remove it.
+    }
+  }
 }
 
 function saveMetadata(metadata) {

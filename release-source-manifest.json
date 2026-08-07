@@ -6,11 +6,11 @@
   },
   "applicationSource": {
     "repository": "juanma-spinworks/surfaces",
-    "commit": "f73132f623b0e41ec38d3a4fd684dd75eb79a642"
+    "commit": "188c4600f4dcf5a657ba6b737b82a07e95e957eb"
   },
   "files": {
     "surfaces-bridge.mjs": {
-      "sha256": "4c0bc1b862cbc3c8dee209c2eada36d7b2c5b6d94f6f22ee06375f55cd857d1c"
+      "sha256": "80433d52ad1e67739779af271543836ee3dcd7f370bab26e3e2a2add7dda1863"
     },
     "origin-policy.mjs": {
       "sha256": "9435835a6370be1e9b08b50f7c875c41729ee1b66b777116a20e16b9b218d0dc"

@@ -65,7 +65,7 @@ function runPromptScenario({
         HOME: process.env.HOME,
         PATH: "/usr/bin:/bin",
       },
-      input: `${account}\n${service}\n${helper}\n${secret}\n`,
+      input: `${service}\n${helper}\n1\n${account}\n${secret}\n`,
       timeout: 10_000,
     },
   );

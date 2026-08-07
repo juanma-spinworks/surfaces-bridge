@@ -104,8 +104,23 @@ assert.match(
 );
 assert.match(
   source,
-  /\$\{KEYCHAIN_SERVICE\}\\n\$\{securityPath\}\\n\$\{encoded\}/u,
-  "the fixed security binary and credential must be supplied through stdin",
+  /\$\{KEYCHAIN_SERVICE\}\\n\$\{securityPath\}\\n\$\{entries\.length\}\\n/u,
+  "the fixed security binary and entry count must be supplied through stdin",
+);
+assert.match(
+  source,
+  /KEYCHAIN_CHUNK_LENGTH = 96[\s\S]*surfaces-keychain-v2/u,
+  "bounded credentials must use versioned sub-128-byte Keychain chunks",
+);
+assert.match(
+  source,
+  /createHash\("sha256"\)\.update\(encoded\)\.digest\("base64url"\)/u,
+  "chunked Keychain credentials must carry an integrity digest",
+);
+assert.match(
+  source,
+  /Buffer\.byteLength\(entry\.secret, "utf8"\) >= 128/u,
+  "the bridge must refuse secrets at the interactive Keychain limit",
 );
 assert.match(
   source,
