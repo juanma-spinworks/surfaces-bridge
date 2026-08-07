@@ -26,6 +26,21 @@ const BRIDGE_KIND = "surfaces-bridge";
 const BRIDGE_VERSION = "0.1.0";
 const KEYCHAIN_SERVICE = "com.slangworks.surfaces.bridge";
 const CONNECTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
+const VERSION_PATTERN = /\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/u;
+const OS_VERSION_PATTERN = /\b\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\b/u;
+const PROVIDERS = new Set(["codex", "claude"]);
+const CONNECTION_STAGES = new Set([
+  "input_validation",
+  "platform_check",
+  "capability_detection",
+  "credential_store_preflight",
+  "key_generation",
+  "pairing_start",
+  "proof_completion",
+  "credential_store",
+  "context",
+  "presence",
+]);
 export const KEYCHAIN_WRITE_SCRIPT = String.raw`
 set timeout 30
 log_user 0
@@ -79,6 +94,8 @@ async function runCli(values) {
   try {
     if (command === "connect") {
       await connect(argumentsByName);
+    } else if (command === "diagnose") {
+      await diagnose(argumentsByName);
     } else if (command === "context") {
       await context(argumentsByName);
     } else if (command === "event") {
@@ -94,99 +111,179 @@ async function runCli(values) {
       process.exitCode = command ? 1 : 0;
     }
   } catch (error) {
-    process.stderr.write(
-      `Surfaces bridge: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    const diagnostic = diagnosticFromError(error);
+    if (command === "connect") {
+      await reportConnectionFailure(argumentsByName, diagnostic).catch(
+        () => undefined,
+      );
+    }
+    process.stderr.write(`${JSON.stringify(diagnostic)}\n`);
     process.exitCode = 1;
   }
 }
 
 async function connect(args) {
-  const allowLocalOrigin = args["allow-local-origin"] === true;
-  const origin = resolveSurfaceOrigin(required(args, "origin"), {
-    allowLocal: allowLocalOrigin,
-  });
-  const code = required(args, "code");
-  assertMacKeychain();
-  assertKeychainWritable();
+  const input = await connectionStage(
+    "input_validation",
+    "connection_input_invalid",
+    "Use the exact generated prompt without editing its origin, code, or provider.",
+    () => {
+      const allowLocalOrigin = args["allow-local-origin"] === true;
+      return {
+        allowLocalOrigin,
+        code: required(args, "code"),
+        origin: resolveSurfaceOrigin(required(args, "origin"), {
+          allowLocal: allowLocalOrigin,
+        }),
+        provider: requiredProvider(args),
+      };
+    },
+  );
+  await connectionStage(
+    "platform_check",
+    "unsupported_local_platform",
+    "Run this beta connection on a supported Mac with the system security and expect tools.",
+    () => assertMacKeychain(),
+  );
+  const capability = await connectionStage(
+    "capability_detection",
+    "provider_capability_unavailable",
+    `Install or update the ${input.provider} CLI, confirm it runs on this Mac, and retry the same unexpired prompt.`,
+    () => detectProviderCapability(input.provider),
+  );
+  await connectionStage(
+    "credential_store_preflight",
+    "keychain_preflight_failed",
+    "Approve macOS Keychain access for this bridge command, then retry the same unexpired prompt.",
+    () => assertKeychainWritable(),
+  );
 
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const { publicKey, privateKey } = await connectionStage(
+    "key_generation",
+    "device_key_generation_failed",
+    "Retry on the supported Mac. If this repeats, create a fresh pairing and report the diagnostic code.",
+    () => generateKeyPairSync("ed25519"),
+  );
   const publicDer = publicKey.export({ format: "der", type: "spki" });
   const publicKeyRaw = publicDer.subarray(publicDer.length - 32);
-  const start = await jsonFetch(`${origin}/api/agent/connect/start`, {
-    method: "POST",
-    body: JSON.stringify({
-      protocolVersion: PROTOCOL_VERSION,
-      clientKind: BRIDGE_KIND,
-      clientVersion: BRIDGE_VERSION,
-      code,
-      publicKey: encodeBase64Url(publicKeyRaw),
-    }),
-  });
+  const start = await connectionStage(
+    "pairing_start",
+    "pairing_start_failed",
+    "Check the failure details. If the credential expired or was used, create a fresh connection prompt and retry.",
+    () =>
+      jsonFetch(`${input.origin}/api/agent/connect/start`, {
+        method: "POST",
+        body: JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          clientKind: BRIDGE_KIND,
+          clientVersion: BRIDGE_VERSION,
+          capability,
+          code: input.code,
+          publicKey: encodeBase64Url(publicKeyRaw),
+        }),
+      }),
+  );
   const challenge = start.challenge;
   if (!challenge?.message || !challenge.connectionId) {
-    throw new Error("The Surface returned an invalid connection challenge.");
+    throw new BridgeDiagnosticError({
+      code: "pairing_challenge_invalid",
+      stage: "pairing_start",
+      message: "The Surface returned an invalid connection challenge.",
+      repair: "Create a fresh connection prompt and retry with the current bridge.",
+    });
   }
   const challengeConnectionId = assertConnectionId(
     challenge.connectionId,
   );
 
   const signature = sign(null, Buffer.from(challenge.message), privateKey);
-  const completed = await jsonFetch(
-    `${origin}/api/agent/connect/complete`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        connectionId: challengeConnectionId,
-        challengeId: challenge.challengeId,
-        nonce: challenge.nonce,
-        signature: encodeBase64Url(signature),
-      }),
-    },
+  const completed = await connectionStage(
+    "proof_completion",
+    "proof_completion_failed",
+    "Create a fresh connection prompt and retry on the same Mac.",
+    () =>
+      jsonFetch(
+        `${input.origin}/api/agent/connect/complete`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            connectionId: challengeConnectionId,
+            challengeId: challenge.challengeId,
+            nonce: challenge.nonce,
+            signature: encodeBase64Url(signature),
+          }),
+        },
+      ),
   );
   const connection = completed.connection;
   if (!connection?.accessToken) {
-    throw new Error("The Surface did not issue a bounded agent session.");
+    throw new BridgeDiagnosticError({
+      code: "bounded_session_missing",
+      stage: "proof_completion",
+      message: "The Surface did not issue a bounded agent session.",
+      repair: "Revoke the incomplete connection, create a fresh prompt, and retry.",
+    });
   }
   const connectionId = assertConnectionId(connection.connectionId);
 
   const credential = {
-    origin,
+    origin: input.origin,
     connectionId,
     accessToken: connection.accessToken,
     tokenExpiresAt: connection.tokenExpiresAt,
     refreshToken: connection.refreshToken,
     refreshTokenExpiresAt: connection.refreshTokenExpiresAt,
     privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }),
-    ...(allowLocalOrigin ? { allowLocalOrigin: true } : {}),
+    ...(input.allowLocalOrigin ? { allowLocalOrigin: true } : {}),
   };
-  saveCredential(connectionId, credential);
-  saveMetadata({
-    connectionId,
-    origin,
-    clientKind: BRIDGE_KIND,
-    clientVersion: BRIDGE_VERSION,
-    role: connection.role,
-    tokenExpiresAt: connection.tokenExpiresAt,
-    refreshTokenExpiresAt: connection.refreshTokenExpiresAt,
-    connectedAt: new Date().toISOString(),
-  });
-
-  const roleContext = await signedFetch(
-    credential,
-    "GET",
-    "/api/agent/context",
+  await connectionStage(
+    "credential_store",
+    "credential_store_failed",
+    "Ask the human to revoke this incomplete connection, approve Keychain access, and create a fresh prompt.",
+    () => {
+      saveCredential(connectionId, credential);
+      saveMetadata({
+        connectionId,
+        origin: input.origin,
+        clientKind: BRIDGE_KIND,
+        clientVersion: BRIDGE_VERSION,
+        capability,
+        role: connection.role,
+        tokenExpiresAt: connection.tokenExpiresAt,
+        refreshTokenExpiresAt: connection.refreshTokenExpiresAt,
+        connectedAt: new Date().toISOString(),
+      });
+    },
   );
-  const presence = await signedFetch(
-    credential,
-    "POST",
-    "/api/agent/presence",
-    { state: "online" },
+
+  const roleContext = await connectionStage(
+    "context",
+    "initial_context_failed",
+    "Run the context command with this connection ID. If authorization fails, ask the human to revoke and re-pair.",
+    () =>
+      signedFetch(
+        credential,
+        "GET",
+        "/api/agent/context",
+      ),
+  );
+  const presence = await connectionStage(
+    "presence",
+    "initial_presence_failed",
+    "Run the presence command with this connection ID. Surfaces will not show the agent active until a live lease succeeds.",
+    () =>
+      signedFetch(
+        credential,
+        "POST",
+        "/api/agent/presence",
+        { state: "online" },
+      ),
   );
 
   writeJson({
     connected: true,
     connectionId,
+    capability,
     role: connection.role,
     tokenExpiresAt: connection.tokenExpiresAt,
     context: roleContext,
@@ -196,6 +293,77 @@ async function connect(args) {
         "Reuse the same pinned npm exec package prefix for every follow-up bridge command.",
       connectionArgument: `--connection ${connectionId}`,
     },
+  });
+}
+
+async function diagnose(args) {
+  const provider = await connectionStage(
+    "input_validation",
+    "connection_input_invalid",
+    "Run diagnose with --provider codex or --provider claude.",
+    () => requiredProvider(args),
+  );
+  await connectionStage(
+    "platform_check",
+    "unsupported_local_platform",
+    "Run this beta connection on a supported Mac with the system security and expect tools.",
+    () => assertMacKeychain(),
+  );
+  const capability = await connectionStage(
+    "capability_detection",
+    "provider_capability_unavailable",
+    `Install or update the ${provider} CLI, confirm it runs on this Mac, and retry.`,
+    () => detectProviderCapability(provider),
+  );
+  await connectionStage(
+    "credential_store_preflight",
+    "keychain_preflight_failed",
+    "Approve macOS Keychain access for the bridge and retry.",
+    () => assertKeychainWritable(),
+  );
+  writeJson({
+    ready: true,
+    capability,
+    bridge: {
+      kind: BRIDGE_KIND,
+      version: BRIDGE_VERSION,
+    },
+    checks: [
+      "supported macOS runtime",
+      `${provider} CLI version`,
+      "Node.js version",
+      "transient non-secret Keychain write and cleanup",
+    ],
+    networkContacted: false,
+    pairingCredentialConsumed: false,
+  });
+}
+
+async function reportConnectionFailure(args, diagnostic) {
+  if (
+    !CONNECTION_STAGES.has(diagnostic.stage) ||
+    diagnostic.stage === "input_validation" ||
+    typeof diagnostic.code !== "string" ||
+    !/^[a-z][a-z0-9_]{2,63}$/u.test(diagnostic.code)
+  ) {
+    return;
+  }
+  const allowLocalOrigin = args["allow-local-origin"] === true;
+  const origin = resolveSurfaceOrigin(required(args, "origin"), {
+    allowLocal: allowLocalOrigin,
+  });
+  const code = required(args, "code");
+  await fetch(`${origin}/api/agent/connect/attempt`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      code,
+      failureStage: diagnostic.stage,
+      failureCode: diagnostic.code,
+    }),
+    signal: AbortSignal.timeout(3_000),
   });
 }
 
@@ -256,6 +424,109 @@ function status(args) {
       !metadata.refreshTokenExpiresAt ||
       metadata.refreshTokenExpiresAt <= Date.now(),
   });
+}
+
+export class BridgeDiagnosticError extends Error {
+  constructor({ code, stage, message, repair, status }) {
+    super(message);
+    this.name = "BridgeDiagnosticError";
+    this.code = code;
+    this.stage = stage;
+    this.repair = repair;
+    this.status = status;
+  }
+}
+
+async function connectionStage(stage, code, repair, action) {
+  if (!CONNECTION_STAGES.has(stage)) {
+    throw new Error("The bridge contains an unknown connection stage.");
+  }
+  try {
+    return await action();
+  } catch (error) {
+    if (error instanceof BridgeDiagnosticError) throw error;
+    throw new BridgeDiagnosticError({
+      code,
+      stage,
+      message: error instanceof Error ? error.message : "The operation failed.",
+      repair,
+      status:
+        error && typeof error === "object" && "status" in error
+          ? error.status
+          : undefined,
+    });
+  }
+}
+
+export function diagnosticFromError(error) {
+  if (error instanceof BridgeDiagnosticError) {
+    return {
+      ok: false,
+      code: error.code,
+      stage: error.stage,
+      message: error.message,
+      repair: error.repair,
+      ...(Number.isInteger(error.status) ? { httpStatus: error.status } : {}),
+    };
+  }
+  return {
+    ok: false,
+    code: "bridge_command_failed",
+    stage: "command",
+    message: error instanceof Error ? error.message : String(error),
+    repair: "Check the command arguments and retry.",
+  };
+}
+
+export function detectProviderCapability(
+  provider,
+  run = execFileSync,
+  environment = {},
+) {
+  const selectedProvider = normalizeProvider(provider);
+  const currentPlatform = environment.platform ?? platform();
+  if (currentPlatform !== "darwin") {
+    throw new Error("The Instant connection beta currently requires macOS.");
+  }
+  const providerOutput = run(selectedProvider, ["--version"], {
+    encoding: "utf8",
+    env: {
+      HOME: environment.home ?? homedir(),
+      PATH:
+        environment.path ??
+        process.env.PATH ??
+        "/usr/local/bin:/usr/bin:/bin",
+      NO_COLOR: "1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+  });
+  const platformOutput = run(
+    "/usr/bin/sw_vers",
+    ["-productVersion"],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: "/usr/bin:/bin",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5_000,
+    },
+  );
+  return {
+    provider: selectedProvider,
+    providerVersion: readDetectedVersion(providerOutput, selectedProvider),
+    nodeVersion: readDetectedVersion(
+      environment.nodeVersion ?? process.versions.node,
+      "Node.js",
+    ),
+    platform: "macos",
+    platformVersion: readDetectedVersion(
+      platformOutput,
+      "macOS",
+      OS_VERSION_PATTERN,
+    ),
+  };
 }
 
 async function signedFetch(credential, method, path, payload) {
@@ -384,11 +655,26 @@ async function jsonFetch(url, init) {
     throw new Error(`The Surface returned HTTP ${response.status}.`);
   }
   if (!response.ok) {
-    const error = new Error(
-      payload.error ?? `The Surface returned HTTP ${response.status}.`,
-    );
-    error.status = response.status;
-    throw error;
+    const message =
+      typeof payload.error === "string"
+        ? payload.error
+        : `The Surface returned HTTP ${response.status}.`;
+    if (
+      typeof payload.code === "string" &&
+      typeof payload.stage === "string" &&
+      typeof payload.repair === "string"
+    ) {
+      throw new BridgeDiagnosticError({
+        code: payload.code,
+        stage: payload.stage,
+        message,
+        repair: payload.repair,
+        status: response.status,
+      });
+    }
+    const responseError = new Error(message);
+    responseError.status = response.status;
+    throw responseError;
   }
   return payload;
 }
@@ -538,6 +824,25 @@ function required(args, key) {
   return value;
 }
 
+function requiredProvider(args) {
+  return normalizeProvider(required(args, "provider"));
+}
+
+function normalizeProvider(value) {
+  if (typeof value !== "string" || !PROVIDERS.has(value.toLowerCase())) {
+    throw new Error("--provider must be codex or claude.");
+  }
+  return value.toLowerCase();
+}
+
+function readDetectedVersion(value, label, pattern = VERSION_PATTERN) {
+  const match = String(value).match(pattern);
+  if (!match) {
+    throw new Error(`${label} did not report a recognizable version.`);
+  }
+  return match[0];
+}
+
 function assertMacKeychain() {
   if (platform() !== "darwin") {
     throw new Error(
@@ -630,13 +935,15 @@ function printUsage() {
   process.stdout.write(`Surfaces reference bridge
 
 Usage:
-  surfaces-bridge connect --origin <url> --code <SURF-code> [--allow-local-origin]
+  surfaces-bridge diagnose --provider <codex|claude>
+  surfaces-bridge connect --origin <url> --code <SURF-code> --provider <codex|claude> [--allow-local-origin]
   surfaces-bridge context [--connection <id>] [--cursor <event-id>]
   surfaces-bridge event [--connection <id>] --file <event.json>
   surfaces-bridge presence [--connection <id>]
   surfaces-bridge refresh [--connection <id>]
   surfaces-bridge status [--connection <id>]
 
+diagnose contacts no network service and consumes no pairing credential.
 The private device key and access token are stored in macOS Keychain.
 `);
 }

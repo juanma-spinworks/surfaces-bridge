@@ -74,12 +74,12 @@ assert.match(
 assert.ok(source.startsWith("#!/usr/bin/env node\n"));
 assert.match(
   source,
-  /const roleContext = await signedFetch\(\s*credential,\s*"GET",\s*"\/api\/agent\/context"/u,
+  /const roleContext = await connectionStage\([\s\S]*?"context"[\s\S]*?signedFetch\(\s*credential,\s*"GET",\s*"\/api\/agent\/context"/u,
   "connect must fetch signed role context in the same ephemeral invocation",
 );
 assert.match(
   source,
-  /const presence = await signedFetch\(\s*credential,\s*"POST",\s*"\/api\/agent\/presence"/u,
+  /const presence = await connectionStage\([\s\S]*?"presence"[\s\S]*?signedFetch\(\s*credential,\s*"POST",\s*"\/api\/agent\/presence"/u,
   "connect must create an explicit presence lease in the same invocation",
 );
 assert.doesNotMatch(
@@ -89,8 +89,28 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /assertMacKeychain\(\);\s*assertKeychainWritable\(\);\s*const \{ publicKey, privateKey \}/u,
-  "Keychain writes must be proven before the pairing is consumed",
+  /"platform_check"[\s\S]*"capability_detection"[\s\S]*"credential_store_preflight"[\s\S]*assertKeychainWritable\(\)[\s\S]*"key_generation"[\s\S]*generateKeyPairSync\("ed25519"\)[\s\S]*"pairing_start"/u,
+  "platform, provider, Keychain, and local key checks must precede pairing consumption",
+);
+assert.match(
+  source,
+  /clientVersion: BRIDGE_VERSION,\s*capability,\s*code: input\.code/u,
+  "pairing start must carry the bounded provider capability report",
+);
+assert.match(
+  source,
+  /process\.stderr\.write\(`\$\{JSON\.stringify\(diagnostic\)\}\\n`\)/u,
+  "connection failures must emit machine-readable staged diagnostics",
+);
+assert.match(
+  source,
+  /body: JSON\.stringify\(\{\s*code,\s*failureStage: diagnostic\.stage,\s*failureCode: diagnostic\.code,\s*\}\)/u,
+  "failure analytics must contain only the pairing credential and fixed diagnostic identifiers",
+);
+assert.doesNotMatch(
+  source,
+  /body: JSON\.stringify\(\{[\s\S]{0,160}(?:message|repair|prompt):/u,
+  "failure analytics must not submit error text, repair text, or prompts",
 );
 assert.match(
   source,

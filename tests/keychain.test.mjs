@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BridgeDiagnosticError,
   KEYCHAIN_WRITE_SCRIPT,
   assertKeychainWritable,
+  detectProviderCapability,
+  diagnosticFromError,
   saveCredential,
 } from "../surfaces-bridge.mjs";
 
@@ -136,6 +139,78 @@ test("Keychain helper failures return credential-free guidance", () => {
         assert.doesNotMatch(error.message, new RegExp(sentinel, "u"));
       }
       return true;
+    },
+  );
+});
+
+test("provider capability detection reports only bounded runtime versions", () => {
+  const invocations = [];
+  const capability = detectProviderCapability(
+    "codex",
+    (file, args, options) => {
+      invocations.push({ file, args, options });
+      return file === "codex" ? "codex-cli 0.144.1\n" : "26.6\n";
+    },
+    {
+      platform: "darwin",
+      home: "/Users/example",
+      path: "/opt/homebrew/bin:/usr/bin:/bin",
+      nodeVersion: "22.16.0",
+    },
+  );
+
+  assert.deepEqual(capability, {
+    provider: "codex",
+    providerVersion: "0.144.1",
+    nodeVersion: "22.16.0",
+    platform: "macos",
+    platformVersion: "26.6",
+  });
+  assert.deepEqual(
+    invocations.map(({ file, args }) => ({ file, args })),
+    [
+      { file: "codex", args: ["--version"] },
+      { file: "/usr/bin/sw_vers", args: ["-productVersion"] },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(invocations), /credential|pairing|prompt/u);
+});
+
+test("provider capability detection refuses unsupported providers and versions", () => {
+  assert.throws(
+    () =>
+      detectProviderCapability("other", () => "", {
+        platform: "darwin",
+      }),
+    /codex or claude/u,
+  );
+  assert.throws(
+    () =>
+      detectProviderCapability(
+        "claude",
+        (file) => (file === "claude" ? "unknown" : "26.6"),
+        { platform: "darwin", nodeVersion: "22.16.0" },
+      ),
+    /recognizable version/u,
+  );
+});
+
+test("connection failures expose a stable repairable stage", () => {
+  assert.deepEqual(
+    diagnosticFromError(
+      new BridgeDiagnosticError({
+        code: "provider_capability_unavailable",
+        stage: "capability_detection",
+        message: "The CLI was not found.",
+        repair: "Install the selected provider CLI and retry.",
+      }),
+    ),
+    {
+      ok: false,
+      code: "provider_capability_unavailable",
+      stage: "capability_detection",
+      message: "The CLI was not found.",
+      repair: "Install the selected provider CLI and retry.",
     },
   );
 });
