@@ -18,3 +18,16 @@ jobs:
         with:
           node-version: 22.14.0
       - run: npm test
+
+  keychain-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - run: npm run test:keychain-macos
+      - name: Test direct and installed bridge entrypoints
+        run: |
+          node surfaces-bridge.mjs
+          npm run test:clean-consumer

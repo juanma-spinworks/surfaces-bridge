@@ -7,9 +7,17 @@ import {
   sign,
 } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { resolveSurfaceOrigin } from "./origin-policy.mjs";
 
@@ -17,6 +25,59 @@ const PROTOCOL_VERSION = "surfaces.coms.v1";
 const BRIDGE_KIND = "surfaces-bridge";
 const BRIDGE_VERSION = "0.1.0";
 const KEYCHAIN_SERVICE = "com.slangworks.surfaces.bridge";
+const KEYCHAIN_CHUNK_LENGTH = 96;
+const KEYCHAIN_MANIFEST_PATTERN =
+  /^surfaces-keychain-v2:([0-9a-f]{32}):(\d{1,2}):([A-Za-z0-9_-]{43})$/u;
+const MAX_KEYCHAIN_CHUNKS = 64;
+const CONNECTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
+export const KEYCHAIN_WRITE_SCRIPT = String.raw`
+set timeout 30
+log_user 0
+
+if {[gets stdin service] < 0} { exit 64 }
+if {[gets stdin security_path] < 0} { exit 64 }
+if {[gets stdin entry_count] < 0} { exit 64 }
+if {![string is integer -strict $entry_count] || $entry_count < 1 || $entry_count > 65} {
+  exit 64
+}
+
+proc store_secret {security_path service account secret} {
+  spawn -noecho $security_path add-generic-password -U -a $account -s $service -w
+  set prompt_count 0
+  expect {
+    -re {(?i)password[^:]*:[[:space:]]*$} {
+      incr prompt_count
+      if {$prompt_count > 2} {
+        catch {exec /bin/kill -TERM [exp_pid]}
+        catch {close}
+        catch {wait}
+        return 65
+      }
+      send -- "$secret\r"
+      exp_continue
+    }
+    eof {
+      set result [wait]
+      if {$prompt_count < 1 || $prompt_count > 2} { return 66 }
+      return [lindex $result 3]
+    }
+    timeout {
+      catch {exec /bin/kill -TERM [exp_pid]}
+      catch {close}
+      catch {wait}
+      return 67
+    }
+  }
+}
+
+for {set entry_index 0} {$entry_index < $entry_count} {incr entry_index} {
+  if {[gets stdin account] < 0} { exit 64 }
+  if {[gets stdin secret] < 0} { exit 64 }
+  set result [store_secret $security_path $service $account $secret]
+  if {$result != 0} { exit $result }
+}
+exit 0
+`;
 const METADATA_DIRECTORY = join(
   homedir(),
   ".config",
@@ -24,31 +85,36 @@ const METADATA_DIRECTORY = join(
   "connections",
 );
 
-const [command, ...argumentList] = process.argv.slice(2);
-const argumentsByName = parseArguments(argumentList);
+if (isDirectExecution()) {
+  await runCli(process.argv.slice(2));
+}
 
-try {
-  if (command === "connect") {
-    await connect(argumentsByName);
-  } else if (command === "context") {
-    await context(argumentsByName);
-  } else if (command === "event") {
-    await event(argumentsByName);
-  } else if (command === "presence") {
-    await presence(argumentsByName);
-  } else if (command === "refresh") {
-    await refresh(argumentsByName);
-  } else if (command === "status") {
-    status(argumentsByName);
-  } else {
-    printUsage();
-    process.exitCode = command ? 1 : 0;
+async function runCli(values) {
+  const [command, ...argumentList] = values;
+  const argumentsByName = parseArguments(argumentList);
+  try {
+    if (command === "connect") {
+      await connect(argumentsByName);
+    } else if (command === "context") {
+      await context(argumentsByName);
+    } else if (command === "event") {
+      await event(argumentsByName);
+    } else if (command === "presence") {
+      await presence(argumentsByName);
+    } else if (command === "refresh") {
+      await refresh(argumentsByName);
+    } else if (command === "status") {
+      status(argumentsByName);
+    } else {
+      printUsage();
+      process.exitCode = command ? 1 : 0;
+    }
+  } catch (error) {
+    process.stderr.write(
+      `Surfaces bridge: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exitCode = 1;
   }
-} catch (error) {
-  process.stderr.write(
-    `Surfaces bridge: ${error instanceof Error ? error.message : String(error)}\n`,
-  );
-  process.exitCode = 1;
 }
 
 async function connect(args) {
@@ -77,6 +143,9 @@ async function connect(args) {
   if (!challenge?.message || !challenge.connectionId) {
     throw new Error("The Surface returned an invalid connection challenge.");
   }
+  const challengeConnectionId = assertConnectionId(
+    challenge.connectionId,
+  );
 
   const signature = sign(null, Buffer.from(challenge.message), privateKey);
   const completed = await jsonFetch(
@@ -84,7 +153,7 @@ async function connect(args) {
     {
       method: "POST",
       body: JSON.stringify({
-        connectionId: challenge.connectionId,
+        connectionId: challengeConnectionId,
         challengeId: challenge.challengeId,
         nonce: challenge.nonce,
         signature: encodeBase64Url(signature),
@@ -95,10 +164,11 @@ async function connect(args) {
   if (!connection?.accessToken) {
     throw new Error("The Surface did not issue a bounded agent session.");
   }
+  const connectionId = assertConnectionId(connection.connectionId);
 
   const credential = {
     origin,
-    connectionId: connection.connectionId,
+    connectionId,
     accessToken: connection.accessToken,
     tokenExpiresAt: connection.tokenExpiresAt,
     refreshToken: connection.refreshToken,
@@ -106,9 +176,9 @@ async function connect(args) {
     privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }),
     ...(allowLocalOrigin ? { allowLocalOrigin: true } : {}),
   };
-  saveCredential(connection.connectionId, credential);
+  saveCredential(connectionId, credential);
   saveMetadata({
-    connectionId: connection.connectionId,
+    connectionId,
     origin,
     clientKind: BRIDGE_KIND,
     clientVersion: BRIDGE_VERSION,
@@ -132,7 +202,7 @@ async function connect(args) {
 
   writeJson({
     connected: true,
-    connectionId: connection.connectionId,
+    connectionId,
     role: connection.role,
     tokenExpiresAt: connection.tokenExpiresAt,
     context: roleContext,
@@ -140,7 +210,7 @@ async function connect(args) {
     followUp: {
       instruction:
         "Reuse the same pinned npm exec package prefix for every follow-up bridge command.",
-      connectionArgument: `--connection ${connection.connectionId}`,
+      connectionArgument: `--connection ${connectionId}`,
     },
   });
 }
@@ -339,58 +409,260 @@ async function jsonFetch(url, init) {
   return payload;
 }
 
-function saveCredential(connectionId, credential) {
-  const encoded = Buffer.from(JSON.stringify(credential)).toString("base64");
+export function saveCredential(
+  connectionId,
+  credential,
+  run = execFileSync,
+) {
+  assertConnectionId(connectionId);
+  const previousManifest = readExistingKeychainManifest(connectionId, run);
+  const stored = encodeCredentialForKeychain(connectionId, credential);
   try {
-    execFileSync(
-      "security",
-      [
-        "add-generic-password",
-        "-U",
-        "-a",
-        connectionId,
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-w",
-        encoded,
-      ],
-      { stdio: "ignore" },
-    );
+    writeKeychainEntries(stored.entries, run);
+    if (previousManifest) {
+      deleteKeychainAccounts(
+        keychainChunkAccounts(connectionId, previousManifest),
+        run,
+      );
+    }
   } catch {
+    const currentManifest = readExistingKeychainManifest(connectionId, run);
+    if (currentManifest?.revision === stored.manifest.revision) {
+      if (keychainRevisionIsComplete(connectionId, currentManifest, run)) {
+        if (previousManifest) {
+          deleteKeychainAccounts(
+            keychainChunkAccounts(connectionId, previousManifest),
+            run,
+          );
+        }
+        return;
+      }
+      deleteKeychainAccounts([connectionId], run);
+    }
+    deleteKeychainAccounts(stored.chunkAccounts, run);
     throw new Error(
       "macOS Keychain rejected credential storage. Revoke this connection and pair again outside the provider sandbox.",
     );
   }
 }
 
-function loadCredential(connectionId) {
-  assertMacKeychain();
-  let encoded;
+export function encodeCredentialForKeychain(connectionId, credential) {
+  assertConnectionId(connectionId);
+  const encoded = Buffer.from(JSON.stringify(credential)).toString("base64");
+  const chunks = [];
+  for (let offset = 0; offset < encoded.length; offset += KEYCHAIN_CHUNK_LENGTH) {
+    chunks.push(encoded.slice(offset, offset + KEYCHAIN_CHUNK_LENGTH));
+  }
+  if (!chunks.length || chunks.length > MAX_KEYCHAIN_CHUNKS) {
+    throw new Error("The bounded Surfaces credential is too large for Keychain.");
+  }
+  const revision = randomUUID().replaceAll("-", "");
+  const digest = createHash("sha256").update(encoded).digest("base64url");
+  const manifest = { chunkCount: chunks.length, digest, revision };
+  const chunkAccounts = keychainChunkAccounts(connectionId, manifest);
+  return {
+    chunkAccounts,
+    entries: [
+      ...chunks.map((secret, index) => ({
+        account: chunkAccounts[index],
+        secret,
+      })),
+      {
+        account: connectionId,
+        secret: `surfaces-keychain-v2:${revision}:${chunks.length}:${digest}`,
+      },
+    ],
+    manifest,
+  };
+}
+
+function writeKeychainSecret(
+  connectionId,
+  encoded,
+  run = execFileSync,
+  securityPath = "/usr/bin/security",
+) {
+  assertConnectionId(connectionId);
+  writeKeychainEntries(
+    [{ account: connectionId, secret: encoded }],
+    run,
+    securityPath,
+  );
+}
+
+function writeKeychainEntries(
+  entries,
+  run = execFileSync,
+  securityPath = "/usr/bin/security",
+) {
+  if (
+    !Array.isArray(entries) ||
+    !entries.length ||
+    entries.length > MAX_KEYCHAIN_CHUNKS + 1 ||
+    entries.some(
+      (entry) =>
+        !entry ||
+        typeof entry.account !== "string" ||
+        !entry.account ||
+        entry.account.includes("\n") ||
+        typeof entry.secret !== "string" ||
+        !entry.secret ||
+        entry.secret.includes("\n") ||
+        Buffer.byteLength(entry.secret, "utf8") >= 128,
+    )
+  ) {
+    throw new Error("The Keychain write request is invalid.");
+  }
+  run(
+    "/usr/bin/expect",
+    ["-c", KEYCHAIN_WRITE_SCRIPT],
+    {
+      encoding: "utf8",
+      env: {
+        HOME: homedir(),
+        PATH: "/usr/bin:/bin",
+      },
+      input:
+        `${KEYCHAIN_SERVICE}\n${securityPath}\n${entries.length}\n` +
+        `${entries.flatMap((entry) => [entry.account, entry.secret]).join("\n")}\n`,
+      stdio: ["pipe", "ignore", "ignore"],
+      timeout: 35_000,
+    },
+  );
+}
+
+export function loadCredential(
+  connectionId,
+  run = execFileSync,
+  platformCheck = assertMacKeychain,
+) {
+  platformCheck();
+  let stored;
   try {
-    encoded = execFileSync(
-      "security",
-      [
-        "find-generic-password",
-        "-a",
-        connectionId,
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-w",
-      ],
-      { encoding: "utf8" },
-    ).trim();
+    stored = readKeychainSecret(connectionId, run);
   } catch {
     throw new Error(
       `No Keychain credential was found for ${connectionId}. Pair again.`,
     );
   }
-  const credential = JSON.parse(
-    Buffer.from(encoded, "base64").toString("utf8"),
-  );
+  let credential;
+  try {
+    const manifest = parseKeychainManifest(stored);
+    const encoded = manifest
+      ? keychainChunkAccounts(connectionId, manifest)
+          .map((account) => readKeychainSecret(account, run))
+          .join("")
+      : stored;
+    if (
+      manifest &&
+      createHash("sha256").update(encoded).digest("base64url") !==
+        manifest.digest
+    ) {
+      throw new Error("Keychain credential digest mismatch.");
+    }
+    credential = JSON.parse(
+      Buffer.from(encoded, "base64").toString("utf8"),
+    );
+    if (credential.connectionId !== connectionId) {
+      throw new Error("Keychain credential identity mismatch.");
+    }
+  } catch {
+    throw new Error(
+      `The Keychain credential for ${connectionId} is incomplete or damaged. Ask the human to revoke this connection and pair again.`,
+    );
+  }
   credential.origin = resolveSurfaceOrigin(credential.origin, {
     allowLocal: credential.allowLocalOrigin === true,
   });
   return credential;
+}
+
+function readKeychainSecret(account, run = execFileSync) {
+  return String(
+    run(
+      "/usr/bin/security",
+      [
+        "find-generic-password",
+        "-a",
+        account,
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-w",
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ),
+  ).trim();
+}
+
+function readExistingKeychainManifest(connectionId, run = execFileSync) {
+  try {
+    return parseKeychainManifest(readKeychainSecret(connectionId, run));
+  } catch {
+    return null;
+  }
+}
+
+function parseKeychainManifest(value) {
+  const match = String(value).match(KEYCHAIN_MANIFEST_PATTERN);
+  if (!match) return null;
+  const chunkCount = Number(match[2]);
+  if (
+    !Number.isSafeInteger(chunkCount) ||
+    chunkCount < 1 ||
+    chunkCount > MAX_KEYCHAIN_CHUNKS
+  ) {
+    throw new Error("The Keychain credential manifest is invalid.");
+  }
+  return { revision: match[1], chunkCount, digest: match[3] };
+}
+
+function keychainChunkAccounts(connectionId, manifest) {
+  return Array.from(
+    { length: manifest.chunkCount },
+    (_, index) =>
+      `${connectionId}.v2.${manifest.revision}.${String(index).padStart(2, "0")}`,
+  );
+}
+
+function keychainRevisionIsComplete(connectionId, manifest, run) {
+  try {
+    const encoded = keychainChunkAccounts(connectionId, manifest)
+      .map((account) => readKeychainSecret(account, run))
+      .join("");
+    return (
+      createHash("sha256").update(encoded).digest("base64url") ===
+      manifest.digest
+    );
+  } catch {
+    return false;
+  }
+}
+
+function deleteKeychainAccounts(
+  accounts,
+  run = execFileSync,
+  securityPath = "/usr/bin/security",
+) {
+  for (const account of accounts) {
+    try {
+      run(
+        securityPath,
+        [
+          "delete-generic-password",
+          "-a",
+          account,
+          "-s",
+          KEYCHAIN_SERVICE,
+        ],
+        { stdio: "ignore" },
+      );
+    } catch {
+      // The entry does not exist or this sandbox cannot remove it.
+    }
+  }
 }
 
 function saveMetadata(metadata) {
@@ -416,7 +688,7 @@ function readMetadata(connectionId) {
 }
 
 function resolveConnectionId(args) {
-  if (args.connection) return args.connection;
+  if (args.connection) return assertConnectionId(args.connection);
   let entries;
   try {
     entries = readdirSync(METADATA_DIRECTORY)
@@ -430,7 +702,7 @@ function resolveConnectionId(args) {
       "Specify --connection when zero or multiple connections exist.",
     );
   }
-  return entries[0].replace(/\.json$/u, "");
+  return assertConnectionId(entries[0].replace(/\.json$/u, ""));
 }
 
 function readEventPayload(args) {
@@ -474,27 +746,30 @@ function assertMacKeychain() {
       "The MVP reference bridge currently requires macOS Keychain.",
     );
   }
+  if (
+    !existsSync("/usr/bin/security") ||
+    !existsSync("/usr/bin/expect")
+  ) {
+    throw new Error(
+      "The MVP reference bridge requires the macOS security and expect tools.",
+    );
+  }
 }
 
-function assertKeychainWritable() {
-  const probeAccount = `probe:${randomUUID()}`;
+export function assertKeychainWritable(
+  run = execFileSync,
+  securityPath = "/usr/bin/security",
+) {
+  const probeAccount = `probe_${randomUUID()}`;
   try {
-    execFileSync(
-      "security",
-      [
-        "add-generic-password",
-        "-U",
-        "-a",
-        probeAccount,
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-w",
-        "surfaces-keychain-write-probe",
-      ],
-      { stdio: "ignore" },
+    writeKeychainSecret(
+      probeAccount,
+      "surfaces-keychain-write-probe",
+      run,
+      securityPath,
     );
-    execFileSync(
-      "security",
+    run(
+      securityPath,
       [
         "delete-generic-password",
         "-a",
@@ -506,8 +781,8 @@ function assertKeychainWritable() {
     );
   } catch {
     try {
-      execFileSync(
-        "security",
+      run(
+        securityPath,
         [
           "delete-generic-password",
           "-a",
@@ -523,6 +798,25 @@ function assertKeychainWritable() {
     throw new Error(
       "macOS Keychain access is unavailable. Run the bridge outside the provider sandbox or approve Keychain access before pairing.",
     );
+  }
+}
+
+function assertConnectionId(connectionId) {
+  if (
+    typeof connectionId !== "string" ||
+    !CONNECTION_ID_PATTERN.test(connectionId)
+  ) {
+    throw new Error("The Surface returned an invalid connection identifier.");
+  }
+  return connectionId;
+}
+
+function isDirectExecution() {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
   }
 }
 

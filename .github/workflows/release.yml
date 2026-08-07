@@ -28,8 +28,25 @@ permissions:
   contents: read
 
 jobs:
+  keychain-macos:
+    name: Prove macOS credential custody
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.14.0
+          package-manager-cache: false
+      - name: Test system Expect prompt boundary
+        run: npm run test:keychain-macos
+      - name: Test direct and installed bridge entrypoints
+        run: |
+          node surfaces-bridge.mjs
+          npm run test:clean-consumer
+
   prepare:
     name: Test and fingerprint candidate
+    needs: keychain-macos
     runs-on: ubuntu-latest
     outputs:
       integrity: ${{ steps.candidate.outputs.integrity }}

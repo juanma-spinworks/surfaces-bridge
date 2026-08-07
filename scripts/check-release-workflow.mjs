@@ -48,14 +48,28 @@ assert.equal(
   1,
   "the bootstrap token may be referenced only by the first-publish step",
 );
+assert.match(
+  workflow,
+  /keychain-macos:\s*name: Prove macOS credential custody[\s\S]*runs-on: macos-14/u,
+);
+assert.match(workflow, /run: npm run test:keychain-macos/u);
+assert.match(
+  workflow,
+  /prepare:\s*name: Test and fingerprint candidate\s*needs: keychain-macos/u,
+  "release preparation must depend on the exact-source macOS custody gate",
+);
 assert.match(preflight, /refs\/heads\/main/u);
 assert.match(preflight, /refs\/tags\/v\$\{version\}\^\{commit\}/u);
 assert.match(preflight, /origin\/main/u);
 
 for (const phrase of [
+  "Bypass 2FA",
   "npm-production",
   "NPM_BOOTSTRAP_TOKEN",
   "npm CLI 11.15.0",
+  "keychain-macos",
+  "Packages and scopes",
+  "Read and write",
   "trusted-stage",
   "stage-only",
   "Require two-factor authentication and disallow tokens",

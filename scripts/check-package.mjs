@@ -11,6 +11,10 @@ const originPolicy = readFileSync(
   new URL("../origin-policy.mjs", import.meta.url),
   "utf8",
 );
+const readme = readFileSync(
+  new URL("../README.md", import.meta.url),
+  "utf8",
+);
 const releaseSource = JSON.parse(
   readFileSync(
     new URL("../release-source-manifest.json", import.meta.url),
@@ -32,7 +36,12 @@ assert.deepEqual(
   {
     check:
       "node scripts/check-package.mjs && node scripts/check-release-workflow.mjs && npm pack --dry-run --json",
-    test: "node --test tests/*.test.mjs && npm run check",
+    test:
+      "node --test tests/keychain.test.mjs tests/origin-policy.test.mjs && npm run check && npm run test:clean-consumer",
+    "test:clean-consumer":
+      "node scripts/check-clean-consumer.mjs",
+    "test:keychain-macos":
+      "node --test tests/keychain-macos.test.mjs",
   },
   "npm publish lifecycle scripts must remain absent",
 );
@@ -90,6 +99,51 @@ assert.match(
 );
 assert.match(
   source,
+  /securityPath = "\/usr\/bin\/security"[\s\S]*run\(\s*"\/usr\/bin\/expect",\s*\["-c", KEYCHAIN_WRITE_SCRIPT\]/u,
+  "Keychain writes must use the prompt-backed input channel",
+);
+assert.match(
+  source,
+  /\$\{KEYCHAIN_SERVICE\}\\n\$\{securityPath\}\\n\$\{entries\.length\}\\n/u,
+  "the fixed security binary and entry count must be supplied through stdin",
+);
+assert.match(
+  source,
+  /KEYCHAIN_CHUNK_LENGTH = 96[\s\S]*surfaces-keychain-v2/u,
+  "bounded credentials must use versioned sub-128-byte Keychain chunks",
+);
+assert.match(
+  source,
+  /createHash\("sha256"\)\.update\(encoded\)\.digest\("base64url"\)/u,
+  "chunked Keychain credentials must carry an integrity digest",
+);
+assert.match(
+  source,
+  /Buffer\.byteLength\(entry\.secret, "utf8"\) >= 128/u,
+  "the bridge must refuse secrets at the interactive Keychain limit",
+);
+assert.match(
+  source,
+  /currentManifest\?\.revision === stored\.manifest\.revision[\s\S]*keychainRevisionIsComplete\(connectionId, currentManifest, run\)[\s\S]*return;/u,
+  "an ambiguous helper failure must retain a complete committed revision",
+);
+assert.match(
+  source,
+  /writeKeychainSecret\(\s*probeAccount,\s*"surfaces-keychain-write-probe",\s*run,\s*securityPath/u,
+  "preflight must exercise the exact prompt-backed Keychain write",
+);
+assert.doesNotMatch(
+  source,
+  /"-w",\s*encoded/u,
+  "long-lived credentials must never be passed in process argv",
+);
+assert.match(
+  source,
+  /typeof connectionId !== "string" \|\|\s*!CONNECTION_ID_PATTERN\.test\(connectionId\)/u,
+  "connection identifiers must reject non-string server values",
+);
+assert.match(
+  source,
   /resolveSurfaceOrigin\(required\(args, "origin"\)/u,
   "connect must validate the Surface origin before sending the pairing code",
 );
@@ -126,6 +180,16 @@ assert.equal(
   releaseSource.files["origin-policy.mjs"].sha256,
   sha256(originPolicy),
   "origin policy differs from the application-tested hash",
+);
+assert.match(
+  readme,
+  /https:\/\/github\.com\/juanma-spinworks\/surfaces-bridge\/security\/policy/u,
+  "the packaged security-reporting link must resolve outside the tarball",
+);
+assert.doesNotMatch(
+  readme,
+  /\[SECURITY\.md\]\(SECURITY\.md\)/u,
+  "the packaged README must not link to an excluded relative file",
 );
 
 process.stdout.write(
