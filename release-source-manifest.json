@@ -6,7 +6,7 @@
   },
   "applicationSource": {
     "repository": "juanma-spinworks/surfaces",
-    "commit": "188c4600f4dcf5a657ba6b737b82a07e95e957eb"
+    "commit": "aef766d7b427033dc0e1a960203a630bb4af2a2c"
   },
   "files": {
     "surfaces-bridge.mjs": {
